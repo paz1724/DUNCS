@@ -27,7 +27,9 @@ class SteeringVectorGenerator:
         field_type = self.params.field_type.lower()
 
         if pattern_data is not None:
-            return self._generate_antenna_pattern(theta, pattern_data)
+            return self._generate_antenna_pattern(
+                theta, pattern_data, f=f, signal_type=self.params.signal_type
+            )
 
         if field_type == "far":
             return self._generate_far_field(theta, f=f)
@@ -88,8 +90,89 @@ class SteeringVectorGenerator:
         return np.exp(2 * -1j * np.pi * time_delay)
 
     @staticmethod
-    def _generate_antenna_pattern(theta, antenna_pattern_data):
+    def _generate_antenna_pattern(theta, antenna_pattern_data, f=1, signal_type="NarrowBand"):
+        """
+        Generate steering vector from antenna pattern data.
+        
+        Supports two formats:
+        1. Dictionary format (new): frequency-dependent patterns
+           - 'freq': frequency vector
+           - 'phi': azimuth angle vector in degrees
+           - 'A': complex phasor matrix [Nelements, Nazimuth, Nfreqs]
+           - 'amplitude': amplitude in linear scale [Nelements, Nazimuth, Nfreqs]
+           - 'phase': phase in radians [Nelements, Nazimuth, Nfreqs]
+        
+        2. Tuple format (legacy): simple angle-dependent patterns
+           - (azimuth_base_array, phase_array, amps_array)
+        
+        Args:
+            theta: Angle(s) in radians
+            antenna_pattern_data: Dictionary or tuple containing pattern data
+            f: Frequency index/value (default=1, used for broadband signals)
+            signal_type: Signal type ("NarrowBand" or "Broadband")
+        """
         theta_deg = np.rad2deg(theta)
+        theta_deg = np.atleast_1d(theta_deg)
+        
+        # Check if it's the new dictionary format
+        if isinstance(antenna_pattern_data, dict):
+            return SteeringVectorGenerator._generate_antenna_pattern_dict(
+                theta_deg, antenna_pattern_data, f, signal_type
+            )
+        else:
+            # Legacy tuple format for backward compatibility
+            return SteeringVectorGenerator._generate_antenna_pattern_tuple(
+                theta_deg, antenna_pattern_data
+            )
+    
+    @staticmethod
+    def _generate_antenna_pattern_dict(theta_deg, pattern_dict, f=1, signal_type="NarrowBand"):
+        """Generate steering vector from dictionary format (frequency-dependent)."""
+        freq = pattern_dict['freq']
+        phi = pattern_dict['phi']
+        A = pattern_dict['A']  # [Nelements, Nazimuth, Nfreqs]
+        Nelements, Nazimuth, Nfreqs = A.shape
+        
+        # Map frequency f to frequency index
+        if signal_type.startswith("NarrowBand"):
+            # For narrowband, use middle frequency or first frequency
+            freq_idx = Nfreqs // 2 if Nfreqs > 1 else 0
+        else:
+            # For broadband, map f to frequency index
+            # f might be negative (for negative frequencies in FFT)
+            # Normalize to valid range
+            freq_idx = int(np.clip(f, 0, Nfreqs - 1))
+        
+        # Interpolate in angle for each element at the selected frequency
+        steering_vec = np.zeros((Nelements, len(theta_deg)), dtype=complex)
+        
+        for elem_idx in range(Nelements):
+            # Extract pattern for this element at selected frequency: [Nazimuth]
+            A_elem_freq = A[elem_idx, :, freq_idx]
+            
+            # Interpolate complex values
+            # Use real and imaginary parts separately for interpolation
+            interp_real = interpolate.interp1d(
+                phi, np.real(A_elem_freq),
+                bounds_error=False, fill_value="extrapolate", kind='linear'
+            )
+            interp_imag = interpolate.interp1d(
+                phi, np.imag(A_elem_freq),
+                bounds_error=False, fill_value="extrapolate", kind='linear'
+            )
+            
+            steering_vec[elem_idx, :] = (
+                interp_real(theta_deg) + 1j * interp_imag(theta_deg)
+            )
+        
+        # If single angle, return 1D array; otherwise return 2D
+        if len(theta_deg) == 1:
+            return steering_vec[:, 0]
+        return steering_vec
+    
+    @staticmethod
+    def _generate_antenna_pattern_tuple(theta_deg, antenna_pattern_data):
+        """Generate steering vector from tuple format (legacy, angle-dependent only)."""
         azimuth_base_array, phase_array, amps_array = antenna_pattern_data
 
         interp_phase = interpolate.interp1d(azimuth_base_array, phase_array, axis=0,
@@ -99,7 +182,12 @@ class SteeringVectorGenerator:
 
         phase = np.deg2rad(interp_phase(theta_deg))
         amps = 10 ** (interp_amps(theta_deg) / 20)
-        return amps * np.exp(1j * phase)
+        result = amps * np.exp(1j * phase)
+        
+        # Return 1D if single angle, otherwise return as is
+        if len(theta_deg) == 1:
+            return result.flatten()
+        return result
 
     @classmethod
     def reset_instance(cls):

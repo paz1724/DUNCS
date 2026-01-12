@@ -13,12 +13,17 @@ This script defines the SystemModel class for defining the settings of the DoA e
 
 # Imports
 import numpy as np
+from pathlib import Path
+from scipy.io import loadmat
 
 from typing import Optional
 
 from src.steering_vector_generator import SteeringVectorGenerator
 from src.sparse_array import get_array_locations, get_virtual_ula_array, get_difference_co_array
 from src.config.simulation_config import SystemModelParams
+
+# Cache for loaded antenna pattern data to avoid redundant loading
+_antenna_pattern_cache = {}
 
 
 class SystemModel(object):
@@ -72,6 +77,23 @@ class SystemModel(object):
             dist_array_elems=self.dist_array_elems,
             params=self.params
         )
+        
+        # Load antenna pattern data if enabled (use cache to avoid redundant loading)
+        self.pattern_data = None
+        if self.params.antenna_pattern:
+            # Use default path if not specified
+            pattern_file = self.params.antenna_pattern_file
+            if pattern_file is None:
+                # Default path
+                pattern_file = r"D:\HHData\users\Daniel\HofHakshatotAuxilary\Data\Steering\ULA3\SteeringData_Low.mat"
+            
+            if pattern_file:
+                # Check cache first
+                if pattern_file in _antenna_pattern_cache:
+                    self.pattern_data = _antenna_pattern_cache[pattern_file]
+                else:
+                    self.pattern_data = self.load_antenna_pattern(pattern_file)
+                    _antenna_pattern_cache[pattern_file] = self.pattern_data
 
 
     def define_scenario_params(self):
@@ -140,9 +162,149 @@ class SystemModel(object):
 
         return fraunhofer, fresnel
 
+    def load_antenna_pattern(self, mat_file_path: str):
+        """
+        Load antenna pattern data from a .mat file.
+        
+        Expected format:
+        - freq: Frequency vector (Nfreqs x 1)
+        - phi: Azimuth angle vector in degrees (Nazimuth x 1)
+        - A: Complex phasor matrix [Nelements, Nazimuth, Nfreqs]
+        
+        Args:
+            mat_file_path (str): Path to the .mat file containing antenna pattern data
+            
+        Returns:
+            dict: Dictionary containing:
+                - 'freq': Frequency vector (1D array)
+                - 'phi': Azimuth angle vector in degrees (1D array)
+                - 'A': Complex phasor matrix [Nelements, Nazimuth, Nfreqs]
+                - 'amplitude': Amplitude in linear scale [Nelements, Nazimuth, Nfreqs]
+                - 'phase': Phase in radians [Nelements, Nazimuth, Nfreqs]
+                   
+        Raises:
+            FileNotFoundError: If the .mat file doesn't exist
+            KeyError: If required variables are not found in the .mat file
+        """
+        mat_path = Path(mat_file_path)
+        if not mat_path.exists():
+            raise FileNotFoundError(f"Antenna pattern file not found: {mat_file_path}")
+        
+        mat_data = loadmat(mat_file_path)
+        
+        # Check if sSteering struct exists
+        if 'sSteering' not in mat_data:
+            # Remove MATLAB metadata keys (keys starting with '__')
+            data_keys = [k for k in mat_data.keys() if not k.startswith('__')]
+            raise KeyError(f"Could not find 'sSteering' struct in {mat_file_path}. "
+                          f"Available keys: {data_keys}")
+        
+        steering_data = mat_data['sSteering']
+        
+        # Helper function to extract field from MATLAB struct
+        def get_struct_field(struct, field_name):
+            """Extract field from MATLAB struct (structured array)."""
+            if hasattr(struct, 'dtype') and struct.dtype.names and field_name in struct.dtype.names:
+                # It's a structured array - for scalar structs (1x1), use [0, 0]
+                if struct.size == 1:
+                    return struct[field_name][0, 0]
+                else:
+                    return struct[field_name]
+            elif isinstance(struct, dict) and field_name in struct:
+                return struct[field_name]
+            else:
+                return None
+        
+        # Get available field names for error messages
+        if hasattr(steering_data, 'dtype') and steering_data.dtype.names:
+            available_keys = list(steering_data.dtype.names)
+        elif isinstance(steering_data, dict):
+            available_keys = list(steering_data.keys())
+        else:
+            available_keys = []
+        
+        # Find frequency vector
+        freq = None
+        for key in ['freq', 'frequency', 'f', 'frequencies']:
+            freq_data = get_struct_field(steering_data, key)
+            if freq_data is not None:
+                freq = np.squeeze(freq_data)
+                break
+        
+        # Find azimuth/angle vector
+        phi = None
+        for key in ['phi', 'azimuth', 'azimuth_base_array', 'az', 'theta', 'angles']:
+            phi_data = get_struct_field(steering_data, key)
+            if phi_data is not None:
+                phi = np.squeeze(phi_data)
+                break
+        
+        # Find complex phasor matrix
+        A = None
+        for key in ['A', 'pattern', 'phasors', 'antenna_pattern']:
+            A_data = get_struct_field(steering_data, key)
+            if A_data is not None:
+                A = np.array(A_data)
+                break
+        
+        if freq is None:
+            raise KeyError(f"Could not find frequency vector in sSteering struct. "
+                          f"Available fields: {available_keys}")
+        if phi is None:
+            raise KeyError(f"Could not find azimuth/angle vector in sSteering struct. "
+                          f"Available fields: {available_keys}")
+        if A is None:
+            raise KeyError(f"Could not find complex phasor matrix in sSteering struct. "
+                          f"Available fields: {available_keys}")
+        
+        # Ensure arrays are properly shaped
+        freq = np.atleast_1d(freq).flatten()
+        phi = np.atleast_1d(phi).flatten()
+        A = np.array(A)
+        
+        # Verify dimensions: A should be [Nelements, Nazimuth, Nfreqs]
+        if A.ndim != 3:
+            raise ValueError(f"Expected 3D complex matrix A, got shape {A.shape}")
+        
+        Nelements, Nazimuth, Nfreqs = A.shape
+        
+        # Verify dimensions match
+        if len(phi) != Nazimuth:
+            raise ValueError(f"Dimension mismatch: phi has {len(phi)} elements, "
+                           f"but A has {Nazimuth} azimuth points")
+        if len(freq) != Nfreqs:
+            raise ValueError(f"Dimension mismatch: freq has {len(freq)} elements, "
+                           f"but A has {Nfreqs} frequency points")
+        
+        # Extract amplitude and phase from complex matrix
+        amplitude = np.abs(A)  # Amplitude in linear scale
+        phase = np.angle(A)    # Phase in radians
+        
+        pattern_dict = {
+            'freq': freq,
+            'phi': phi,
+            'A': A,
+            'amplitude': amplitude,
+            'phase': phase,
+            'Nelements': Nelements,
+            'Nazimuth': Nazimuth,
+            'Nfreqs': Nfreqs
+        }
+        
+        print(f"Loaded antenna pattern from {mat_file_path}:")
+        print(f"  Elements: {Nelements}, Azimuth points: {Nazimuth}, Frequency points: {Nfreqs}")
+        print(f"  Frequency range: {freq.min():.2f} - {freq.max():.2f}")
+        print(f"  Azimuth range: {phi.min():.2f}° - {phi.max():.2f}°")
+        
+        return pattern_dict
+
     def steering_vec(self, theta, *, distance: Optional[np.ndarray] = None,
                      f: float = 1, nominal=False,
                      pattern_data=None, generate_search_grid=False):
+        # Use loaded pattern_data if antenna_pattern is enabled and pattern_data is not explicitly provided
+        if pattern_data is None and self.params.antenna_pattern and self.pattern_data is not None:
+            pattern_data = self.pattern_data
+            
         return self.sv_generator.generate(
             theta,
             distance=distance,

@@ -1,75 +1,75 @@
 system_model:
-  N: 7
-  M: 10
-  T: 500
-  snr: 10
-  eta: 0.0
-  bias: 0.0
-  sv_noise_var: 0.0
-  field_type: "Far"
-  signal_nature: "non-coherent"
-  array_form: "mra-7"
-  doa_range: [-70, 70]
-  min_gap: 5
+  N: 5                                    # Number of antennas/sensors in the array
+  M: 1                                    # Number of sources/targets (can be a range like [5, 10])
+  T: 8                                    # Number of snapshots/time samples
+  snr: 30                                 # Signal-to-noise ratio in dB (can be a range like [5, 15])
+  eta: 0.0                                # Array geometry uncertainty parameter (normalized misalignment)
+  bias: 0.0                               # Uniform bias in array element positions
+  sv_noise_var: 0.0                       # Steering vector noise variance
+  field_type: "Far"                       # Field type: "Far" or "Near" field
+  signal_nature: "non-coherent"           # Signal coherence: "coherent" or "non-coherent"
+  array_form: "ula"                       # Array geometry: "ula" or "mra-N" (minimum redundancy array with N elements)
+  doa_range: [-70, 70]                    # Direction of arrival (DOA) range in degrees [min, max]
+  min_gap: 5                              # Minimum gap between DOAs in degrees (for training data generation)
 
 
 admm_params:
-  mu: 2.5e-3
-  rho:  2
+  mu: 2.5e-3                              # ADMM penalty parameter (proximal term weight)
+  rho:  2                                 # ADMM step size/penalty parameter
 
 
 model:
-  model_type: "DUNCS"
+  model_type: "DUNCS"                     # Model type to use: "DUNCS", "SparseNet", "SubspaceNet", etc.
   model_params:
-    num_iterations: 20
-    subspace_method: "esprit"
-    criterion: "rmspe"    # admm_objective, rmspe
-    mu: ${admm_params.mu}   # pulled from top-level admm_params
-    rho: ${admm_params.rho}  # pulled from top-level admm_params
+    num_iterations: 20                    # Number of ADMM iterations in the model
+    subspace_method: "esprit"             # Subspace method: "esprit", "music", "root_music"
+    criterion: "rmspe"                    # Loss criterion: "rmspe" (root mean squared phase error) or "admm_objective"
+    mu: ${admm_params.mu}                 # ADMM mu parameter (pulled from top-level admm_params)
+    rho: ${admm_params.rho}               # ADMM rho parameter (pulled from top-level admm_params)
 
 
 training:
-  samples_size: 7000
-  train_test_ratio: 0.1
-  epochs: 90
-  batch_size: 128
-  optimizer: "AdamW"
-  learning_rate: 5e-4
-  weight_decay: 1e-5
-  step_size: 40
-  gamma: 0.5
-  scheduler: "ReduceLROnPlateau"   # ReduceLROnPlateau
-  training_objective: "angle"
-  balance_factor: 1.0
-  true_doa_train: null
-  true_range_train: null
-  true_doa_test: null
-  true_range_test: null
+  samples_size: 7000                      # Total number of training samples to generate
+  train_test_ratio: 0.1                   # Ratio of test to training samples (0.1 = 10% test, 90% train)
+  epochs: 90                              # Number of training epochs
+  batch_size: 128                         # Batch size for training
+  optimizer: "AdamW"                      # Optimizer: "Adam", "AdamW", "SGD", etc.
+  learning_rate: 5e-4                     # Learning rate for optimizer
+  weight_decay: 1e-5                      # L2 regularization/weight decay coefficient
+  step_size: 40                           # Step size for learning rate scheduler (epochs between steps)
+  gamma: 0.5                              # Multiplicative factor for learning rate scheduler
+  scheduler: "ReduceLROnPlateau"          # Learning rate scheduler: "ReduceLROnPlateau", "StepLR", "CustomLR"
+  training_objective: "angle"             # Training objective: "angle" (DOA only) or "angle, range" (DOA + range)
+  balance_factor: 1.0                     # Balance factor for multi-objective losses
+  true_doa_train: null                    # Predefined DOA values for training (null = random generation)
+  true_range_train: null                  # Predefined range values for training (null = random generation)
+  true_doa_test: null                     # Predefined DOA values for testing (null = random generation)
+  true_range_test: null                   # Predefined range values for testing (null = random generation)
 
 evaluation:
-  criterion: [rmspe]                # [rmspe, admm_objective]
-  balance_factor: 1.0
-  covariance_reconstruction: "admm"    # [averaging, admm, admm_cvxpy]
-  admm_iterations: [20, 500]
+  criterion: [rmspe]                      # Evaluation metrics: ["rmspe"], ["admm_objective"], or both
+  balance_factor: 1.0                     # Balance factor for evaluation metrics
+  covariance_reconstruction: "admm"       # Covariance reconstruction method: "averaging", "admm", "admm_cvxpy", "sample"
+  admm_iterations: [20, 500]              # ADMM iteration counts to evaluate (list of iteration numbers)
   models:
-#    DUNCS:
+#    DUNCS:                               # Model-specific evaluation parameters (optional, commented out)
 #      num_iterations: 20
 #      subspace_method: "esprit"
-#      criterion: "rmspe"    # admm_objective, rmspe
-#      mu: ${admm_params.mu}   # pulled from top-level admm_params
-#      rho: ${admm_params.rho}  # pulled from top-level admm_params
-  subspace_methods: ["esprit"]
+#      criterion: "rmspe"
+#      mu: ${admm_params.mu}
+#      rho: ${admm_params.rho}
+  subspace_methods: ["esprit"]            # List of subspace methods to evaluate: ["esprit"], ["music"], etc.
 
 commands:
-  create_data: true
-  save_dataset: false
-  train_model: true
-  save_model: false
-  evaluate_mode: true
-  plot_results: true
-  save_plots: false
+  create_data: true                       # Whether to create new dataset (true) or load existing (false)
+  save_dataset: false                     # Whether to save the generated dataset to disk
+  train_model: true                       # Whether to train the model
+  save_model: false                       # Whether to save the trained model weights
+  evaluate_mode: true                     # Whether to run evaluation after training
+  plot_results: true                      # Whether to display plots during training/evaluation
+  save_plots: false                       # Whether to save plots to files
 
-# Optional scenario sweep:
-scenario:
-#  snr: [15, 20]
-#  T: [500, 400, 300, 250, 200, 150, 100, 50, 30]
+# Optional scenario sweep:                # Uncomment to run multiple simulations with different parameter values
+scenario:                                  # Parameters to sweep over (each list item becomes a separate simulation)
+#  snr: [15, 20]                          # Example: run simulations with SNR = 15 dB and SNR = 20 dB
+#  T: [500, 400, 300, 250, 200, 150, 100, 50, 30]  # Example: run simulations with different snapshot counts
