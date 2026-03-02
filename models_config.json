@@ -1,0 +1,13 @@
+{
+  "models": {
+    "DUNCS": {
+      "config_path": "src/config/DUNCS.yaml"
+    },
+    "SparseNet": {
+      "config_path": "src/config/sparseNet.yaml"
+    }
+  },
+  "samples_size": 20480,
+  "test_ratio": 0.1,
+  "output_dir": "data/simulations/results"
+}

@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude Code
+.claude/
+
+# Data artifacts (weights, datasets, simulation results)
+data/weights/
+data/datasets/
+data/simulations/
+
+# MATLAB generated
+*.asv
+*.fig
+
+# Jupyter
+.ipynb_checkpoints/

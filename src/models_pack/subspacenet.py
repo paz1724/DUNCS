@@ -56,6 +56,7 @@ class SubspaceNet(ParentModel):
         self.criterion = set_criterions(criterion.lower())[0]
         self.tau = tau
         self.N = self.system_model.params.N
+        self._clamp_tau()
         self.diff_method = None
         self.field_type = field_type
         self.p = 0.15
@@ -71,6 +72,18 @@ class SubspaceNet(ParentModel):
         self._eigen_regularization = EigenRegularizationLoss(eigen_regularization_weight)
         # Set the subspace method for training
         self.set_diff_method(diff_method, system_model)
+
+    def _clamp_tau(self):
+        """Clamp tau to T-1 to avoid division by zero in pre_processing.
+
+        When tau >= T, the last lag (i = T-1) produces a zero denominator
+        in the auto-correlation normalization: (T - i - 1) = 0.
+        """
+        T = self.system_model.params.T
+        if self.tau >= T:
+            clamped = T - 1
+            print(f"{self.__class__.__name__}: tau={self.tau} >= T={T}, clamping tau to {clamped}")
+            self.tau = clamped
 
     def get_learned_covariance(self, X: torch.Tensor) -> torch.Tensor:
         """

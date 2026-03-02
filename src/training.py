@@ -174,12 +174,12 @@ class TrainingParams(object):
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         # Assign optimizer for training
-        if optimizer.startswith("Adam"):
+        if optimizer.startswith("AdamW"):
+            self.optimizer = optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        elif optimizer.startswith("Adam"):
             self.optimizer = optim.Adam(
                 self.model.parameters(), lr=learning_rate, weight_decay=weight_decay
             )
-        elif optimizer.startswith("AdamW"):
-            self.optimizer = optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         elif optimizer.startswith("SGD"):
             self.optimizer = optim.SGD(self.model.parameters(), lr=learning_rate)
         elif optimizer == "SGD Momentum":
@@ -349,22 +349,22 @@ def train(
 
     figures_saving_path = Path(saving_path).parent / "simulations" / "results" / "plots"
     if plot_curves:
-        fig_loss = plot_learning_curve(
-            list(range(1, len(loss_valid_list) + 1)), loss_train_list, loss_valid_list,
+        plot_all_training_curves(
+            loss_train_list, loss_valid_list,
+            acc_train_list, acc_valid_list,
             model_name=model._get_name(),
+            save_prefix=f"{model.get_model_name()}_{dt_string_for_save}",
+            save_dir=figures_saving_path if save_figures else None,
             angle_train_loss=loss_train_list_angles,
             angle_valid_loss=loss_valid_list_angles,
             range_train_loss=loss_train_list_ranges,
-            range_valid_loss=loss_valid_list_ranges
+            range_valid_loss=loss_valid_list_ranges,
         )
-        if save_figures:
-            fig_loss.savefig(figures_saving_path / f"Loss_{model.get_model_name()}_{dt_string_for_save}.png")
-        fig_loss.show()
 
     # Save models best weights
     torch.save(model.state_dict(), saving_path / model.get_model_file_name())
     # Plot learning and validation loss curves
-    return model, loss_train_list, loss_valid_list
+    return model, train_res
 
 
 def train_model(training_params: TrainingParams, checkpoint_path=None) -> dict:
@@ -512,6 +512,60 @@ def train_model(training_params: TrainingParams, checkpoint_path=None) -> dict:
     return res
 
 
+def plot_all_training_curves(
+        loss_train, loss_valid, acc_train, acc_valid,
+        model_name=None, save_prefix=None, save_dir=None,
+        angle_train_loss=None, angle_valid_loss=None,
+        range_train_loss=None, range_valid_loss=None,
+):
+    """Generate all permutations of training/validation loss/accuracy plots.
+
+    Produces 6 figures:
+        1. Train Loss
+        2. Validation Loss
+        3. Train + Validation Loss (combined)
+        4. Train Accuracy
+        5. Validation Accuracy
+        6. Train + Validation Accuracy (combined)
+    """
+    if save_dir is not None:
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+    epochs_loss = list(range(1, len(loss_train) + 1))
+    has_acc = acc_train and acc_valid
+    epochs_acc = list(range(1, len(acc_train) + 1)) if has_acc else None
+    suffix = f" {model_name}" if model_name else ""
+
+    def _make_fig(epoch_list, curves, ylabel, title):
+        fig = plt.figure(figsize=(10, 6))
+        for label, data in curves.items():
+            plt.plot(epoch_list, data, label=label)
+        plt.title(title)
+        plt.xlabel("Epochs")
+        plt.ylabel(ylabel)
+        plt.legend(loc="best")
+        return fig
+
+    plots = [
+        ("Loss_Train",          epochs_loss, {"Train": loss_train},                          "Loss",     f"Train Loss{suffix}"),
+        ("Loss_Validation",     epochs_loss, {"Validation": loss_valid},                     "Loss",     f"Validation Loss{suffix}"),
+        ("Loss_TrainValidation", epochs_loss, {"Train": loss_train, "Validation": loss_valid}, "Loss",   f"Train & Validation Loss{suffix}"),
+    ]
+    if has_acc:
+        plots += [
+            ("Accuracy_Train",          epochs_acc, {"Train": acc_train},                            "Accuracy", f"Train Accuracy{suffix}"),
+            ("Accuracy_Validation",     epochs_acc, {"Validation": acc_valid},                       "Accuracy", f"Validation Accuracy{suffix}"),
+            ("Accuracy_TrainValidation", epochs_acc, {"Train": acc_train, "Validation": acc_valid},  "Accuracy", f"Train & Validation Accuracy{suffix}"),
+        ]
+
+    for tag, ep, curves, ylabel, title in plots:
+        fig = _make_fig(ep, curves, ylabel, title)
+        if save_dir is not None and save_prefix is not None:
+            fig.savefig(save_dir / f"{tag}_{save_prefix}.png")
+        fig.show()
+
+
 def plot_accuracy_curve(epoch_list, train_acc: list, validation_acc: list, model_name: str = None):
     """
     Plot the learning curve.
@@ -631,6 +685,119 @@ def simulation_summary(
         print(f"Weight decay = {parameters.weight_decay}")
         print(f"Gamma Value = {parameters.gamma}")
         print(f"Step Value = {parameters.step_size}")
+
+
+def plot_comparison_curves(histories: dict, save_dir=None):
+    """Plot side-by-side comparison of training metrics for multiple models.
+
+    Args:
+        histories: Dict mapping model name -> train_res dict from train_model().
+                   Each train_res has keys: loss_train_list, loss_valid_list,
+                   and optionally acc_train_list, acc_valid_list.
+        save_dir: Directory to save figures (None = don't save).
+    """
+    if save_dir is not None:
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+    colors = {"DUNCS": ("#1f77b4", "#aec7e8"), "SparseNet": ("#ff7f0e", "#ffbb78")}
+    default_colors = [("#2ca02c", "#98df8a"), ("#d62728", "#ff9896")]
+
+    def _get_colors(name):
+        return colors.get(name, default_colors[hash(name) % len(default_colors)])
+
+    # --- Figure 1: Training Loss ---
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+    for name, hist in histories.items():
+        c_train, c_valid = _get_colors(name)
+        epochs = list(range(1, len(hist["loss_train_list"]) + 1))
+        axes[0].plot(epochs, hist["loss_train_list"], color=c_train, label=f"{name} Train")
+        axes[0].plot(epochs, hist["loss_valid_list"], color=c_valid, linestyle="--", label=f"{name} Valid")
+
+    axes[0].set_title("Training & Validation Loss")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss (RMSPE)")
+    axes[0].legend(loc="best")
+    axes[0].grid(True, alpha=0.3)
+
+    # --- Figure 1 right: Validation Loss only (cleaner) ---
+    for name, hist in histories.items():
+        _, c_valid = _get_colors(name)
+        epochs = list(range(1, len(hist["loss_valid_list"]) + 1))
+        axes[1].plot(epochs, hist["loss_valid_list"], color=c_valid, label=f"{name}")
+
+    axes[1].set_title("Validation Loss Comparison")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Loss (RMSPE)")
+    axes[1].legend(loc="best")
+    axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if save_dir:
+        fig.savefig(save_dir / "comparison_loss.png", dpi=150, bbox_inches="tight")
+    fig.show()
+
+    # --- Figure 2: Accuracy (only for models that have it) ---
+    acc_histories = {n: h for n, h in histories.items() if h.get("acc_train_list")}
+    if acc_histories:
+        fig2, axes2 = plt.subplots(1, 2, figsize=(16, 6))
+        for name, hist in acc_histories.items():
+            c_train, c_valid = _get_colors(name)
+            epochs = list(range(1, len(hist["acc_train_list"]) + 1))
+            axes2[0].plot(epochs, hist["acc_train_list"], color=c_train, label=f"{name} Train")
+            axes2[0].plot(epochs, hist["acc_valid_list"], color=c_valid, linestyle="--", label=f"{name} Valid")
+
+        axes2[0].set_title("Source Estimation Accuracy")
+        axes2[0].set_xlabel("Epoch")
+        axes2[0].set_ylabel("Accuracy (%)")
+        axes2[0].legend(loc="best")
+        axes2[0].grid(True, alpha=0.3)
+
+        for name, hist in acc_histories.items():
+            _, c_valid = _get_colors(name)
+            epochs = list(range(1, len(hist["acc_valid_list"]) + 1))
+            axes2[1].plot(epochs, hist["acc_valid_list"], color=c_valid, label=f"{name}")
+
+        axes2[1].set_title("Validation Accuracy Comparison")
+        axes2[1].set_xlabel("Epoch")
+        axes2[1].set_ylabel("Accuracy (%)")
+        axes2[1].legend(loc="best")
+        axes2[1].grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        if save_dir:
+            fig2.savefig(save_dir / "comparison_accuracy.png", dpi=150, bbox_inches="tight")
+        fig2.show()
+
+
+def plot_final_comparison_bar(eval_results: dict, save_dir=None):
+    """Plot a bar chart comparing final test-set metrics for multiple models.
+
+    Args:
+        eval_results: Dict mapping model/method name -> {'loss': float, 'Accuracy': float or None}
+        save_dir: Directory to save figure.
+    """
+    if save_dir is not None:
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+    names = list(eval_results.keys())
+    losses = [eval_results[n]["loss"] for n in names]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.bar(names, losses, color=["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"][:len(names)], edgecolor="black")
+    for bar, val in zip(bars, losses):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                f"{val:.4f}", ha="center", va="bottom", fontweight="bold")
+
+    ax.set_title("Test Set RMSPE Loss Comparison")
+    ax.set_ylabel("RMSPE Loss")
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    if save_dir:
+        fig.savefig(save_dir / "comparison_bar.png", dpi=150, bbox_inches="tight")
+    fig.show()
 
 
 def get_simulation_filename(

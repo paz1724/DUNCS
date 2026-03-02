@@ -290,7 +290,7 @@ def gram_diagonal_overload(Kx: torch.Tensor, eps: float, batch_size: int):
     if not isinstance(Kx, torch.Tensor):
         Kx = torch.tensor(Kx)
 
-    Kx_garm = torch.matmul(torch.transpose(Kx.conj(), 1, 2).to("cpu"), Kx.to("cpu")).to(device)
+    Kx_garm = torch.matmul(torch.transpose(Kx.conj(), 1, 2), Kx)
     eps_addition = (eps * torch.diag(torch.ones(Kx_garm.shape[-1]))).to(device)
     Kx_Out = Kx_garm + eps_addition
     return Kx_Out
@@ -443,6 +443,9 @@ class SpectralNormalization(nn.Module):
                 f"SpectralNormalizeK expects (B,M,N) input, got {K.shape}"
             )
 
+        if not torch.isfinite(K).all():
+            # Replace NaN/Inf to avoid SVD failures in spectral norm
+            K = torch.where(torch.isfinite(K), K, torch.zeros_like(K))
         sigma_max = torch.linalg.norm(K, ord=2, dim=(-2, -1))  # (B,)
         sigma_max = sigma_max.clamp_min(self.eps)  # avoid div‑0 when K ≈ 0
         K_hat = K / sigma_max[..., None, None]

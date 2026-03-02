@@ -67,7 +67,7 @@ commands:
   save_model: false                       # Whether to save the trained model weights
   evaluate_mode: true                     # Whether to run evaluation after training
   plot_results: true                      # Whether to display plots during training/evaluation
-  save_plots: false                       # Whether to save plots to files
+  save_plots: true                        # Whether to save plots to files
 
 # Optional scenario sweep:                # Uncomment to run multiple simulations with different parameter values
 scenario:                                  # Parameters to sweep over (each list item becomes a separate simulation)

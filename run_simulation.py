@@ -54,7 +54,7 @@ class SimulationRunner:
                            np.ceil(((0.9*len(train_dataset)) / config.training.batch_size))*config.training.epochs)
         )
 
-        model, _, _ = train(
+        model, _train_res = train(
             training_parameters=simulation_parameters,
             saving_path=self.paths["saving"],
             save_figures=config.commands.save_plots,

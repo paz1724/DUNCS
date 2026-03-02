@@ -20,6 +20,11 @@ class SparseNet(SubspaceNet):
             self.L = len(self.system_model.array)
 
         self.differences_array = self.system_model.array[:, None] - self.system_model.array[None, :]
+        if self.system_model.virtual_array_ula_seg is not None:
+            self._max_lag = int(np.max(self.system_model.virtual_array_ula_seg))
+        else:
+            # ULA case: array is [0, 1, ..., N-1], so max lag is N-1
+            self._max_lag = int(self.system_model.params.N - 1)
 
     def pre_processing(self, x):
         """
@@ -40,7 +45,7 @@ class SparseNet(SubspaceNet):
             x2 = torch.conj(center_x[:, :, i:]).transpose(1, 2).to(torch.complex128)
             Rx_lag = torch.einsum("BNT, BTM -> BNM", x1, x2) / (center_x.shape[-1] - i - 1)
             x_s_diff = torch.zeros(batch_size, 2 * self.L - 1, dtype=torch.complex128, device=device)
-            for j, lag in enumerate(range(-np.max(self.system_model.virtual_array_ula_seg), np.max(self.system_model.virtual_array_ula_seg) + 1)):
+            for j, lag in enumerate(range(-self._max_lag, self._max_lag + 1)):
                 pairs = torch.from_numpy(self.differences_array) == lag
                 if pairs.any():
                     x_s_diff[:, j] = torch.mean(Rx_lag[:, pairs], dim=1)

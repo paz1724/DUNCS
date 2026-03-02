@@ -360,15 +360,16 @@ def evaluate(
                 model_name = model_tmp._get_name()
                 res[model_name] = model_test_loss
             # Evaluate DNN models
-            for model_name, params in models.items():
-                model = get_model(model_name, params, system_model)
-                num_of_params = sum(p.numel() for p in model.parameters())
-                total_size = sum(p.numel() * p.element_size() for p in model.parameters() if p.requires_grad)
-                print(f"Number of parameters in {model_name}: {num_of_params} with total size: {total_size} bytes")
-            #     start = time.time()
-                model_test_loss = evaluate_dnn_model(model, generic_test_dataset)
-            #     print(f"{model_name} evaluation time: {time.time() - start}")
-                res[model_name] = model_test_loss
+            if models is not None:
+                for model_name, params in models.items():
+                    model = get_model(model_name, params, system_model)
+                    num_of_params = sum(p.numel() for p in model.parameters())
+                    total_size = sum(p.numel() * p.element_size() for p in model.parameters() if p.requires_grad)
+                    print(f"Number of parameters in {model_name}: {num_of_params} with total size: {total_size} bytes")
+                #     start = time.time()
+                    model_test_loss = evaluate_dnn_model(model, generic_test_dataset)
+                #     print(f"{model_name} evaluation time: {time.time() - start}")
+                    res[model_name] = model_test_loss
 
             # Evaluate classical subspace methods
             cov_recon = get_cov_reconstruction_method(cov_recon_method, system_model, **cov_recon_params)
@@ -376,19 +377,20 @@ def evaluate(
                 loss = evaluate_admm_convergence(generic_test_dataset, crit, cov_recon)
                 res[cov_recon.__class__.__name__] = loss
             else:
-                for algorithm in subspace_methods:
-                    start = time.time()
-                    loss = evaluate_model_based(
-                        generic_test_dataset,
-                        system_model,
-                        criterion=crit,
-                        algorithm=algorithm,
-                        cov_recon=cov_recon)
-                    if system_model.params.signal_nature == "coherent" and algorithm.lower() in ["1d-music", "2d-music",
-                                                                                                 "r-music", "esprit"]:
-                        algorithm += "(SPS)"
-                    print(f"{algorithm} evaluation time: {time.time() - start}")
-                    res[algorithm] = loss
+                if subspace_methods is not None:
+                    for algorithm in subspace_methods:
+                        start = time.time()
+                        loss = evaluate_model_based(
+                            generic_test_dataset,
+                            system_model,
+                            criterion=crit,
+                            algorithm=algorithm,
+                            cov_recon=cov_recon)
+                        if system_model.params.signal_nature == "coherent" and algorithm.lower() in ["1d-music", "2d-music",
+                                                                                                     "r-music", "esprit"]:
+                            algorithm += "(SPS)"
+                        print(f"{algorithm} evaluation time: {time.time() - start}")
+                        res[algorithm] = loss
     # results[criterions[0].__class__.__name__]['crb_sncr'] = evaluate_crb(generic_test_dataset, system_model)
 
     for crit_name, method_dict in results.items():
@@ -432,12 +434,13 @@ def admm_evaluation(generic_test_dataset: DataLoader,
                 if num_iterations <= eval_model.get_max_iterations():
                     # Evaluate DNN models if given
                     eval_model.set_num_test_iterations(num_iterations)
-                    for subspace_method in subspace_methods:
-                        eval_model.set_test_subspace_method(
-                            subspace_method)  # TODO: Make it in a more robust and configurable way
-                        model_test_loss = evaluate_dnn_model(eval_model, generic_test_dataset)
-                        model_name = eval_model._get_name()
-                        res[f"{model_name}_{eval_model.get_max_iterations()}_{subspace_method}_{num_iterations}"] = model_test_loss
+                    if subspace_methods is not None:
+                        for subspace_method in subspace_methods:
+                            eval_model.set_test_subspace_method(
+                                subspace_method)  # TODO: Make it in a more robust and configurable way
+                            model_test_loss = evaluate_dnn_model(eval_model, generic_test_dataset)
+                            model_name = eval_model._get_name()
+                            res[f"{model_name}_{eval_model.get_max_iterations()}_{subspace_method}_{num_iterations}"] = model_test_loss
 
             # Evaluate classical methods:
             cov_recon_params['max_iter'] = num_iterations
@@ -446,16 +449,17 @@ def admm_evaluation(generic_test_dataset: DataLoader,
                 loss = evaluate_admm_convergence(generic_test_dataset, crit, cov_recon)
                 res[f"{cov_recon.__class__.__name__}_{num_iterations}"] = loss
             else:
-                for algorithm in subspace_methods:
-                    loss = evaluate_model_based(
-                        generic_test_dataset,
-                        system_model,
-                        criterion=crit,
-                        algorithm=algorithm,
-                        cov_recon=cov_recon)
-                    if system_model.params.signal_nature == "coherent" and algorithm.lower() in ["1d-music", "2d-music",
-                                                                                                 "r-music", "esprit"]:
-                        algorithm += "(SPS)"
-                    res[f"{algorithm}_{num_iterations}"] = loss
+                if subspace_methods is not None:
+                    for algorithm in subspace_methods:
+                        loss = evaluate_model_based(
+                            generic_test_dataset,
+                            system_model,
+                            criterion=crit,
+                            algorithm=algorithm,
+                            cov_recon=cov_recon)
+                        if system_model.params.signal_nature == "coherent" and algorithm.lower() in ["1d-music", "2d-music",
+                                                                                                     "r-music", "esprit"]:
+                            algorithm += "(SPS)"
+                        res[f"{algorithm}_{num_iterations}"] = loss
 
     return results
