@@ -31,6 +31,7 @@ Attributes:
 # Imports
 import itertools
 
+import numpy as np
 import torch
 from tqdm import tqdm
 from torch.utils.data import Dataset, Sampler, Subset
@@ -49,6 +50,7 @@ def create_dataset(
         true_doa: list = None,
         true_range: list = None,
         phase: str = None,
+        angle_pool=None,
 ):
     """
     Generates a synthetic dataset based on the specified parameters and model type.
@@ -74,7 +76,7 @@ def create_dataset(
     for _ in tqdm(range(samples_size), desc="Creating Base Dataset"):
         M = resolve_param(samples_model.params.M)
         # Samples model creation
-        samples_model.set_doa(true_doa, M)
+        samples_model.set_doa(true_doa, M, angle_pool=angle_pool)
         if samples_model.params.field_type.lower().endswith("near"):
             samples_model.set_range(true_range, M)
         # Observations matrix creation
@@ -98,6 +100,37 @@ def create_dataset(
         torch.save(obj=generic_dataset, f=datasets_path / phase / generic_dataset_filename)
 
     return generic_dataset
+
+
+def partition_recorded_angles(samples_model, doa_range, ratios=(0.7, 0.15, 0.15), seed=0):
+    """Partition the recorded azimuth grid (within doa_range, degrees) into three
+    DISJOINT AoA pools: (train, val, test).
+
+    Requires the antenna pattern loaded (samples_model.pattern_data with a 'phi'
+    azimuth grid). Generating each split's samples from its own pool guarantees
+    that no angle-of-arrival is ever shared across train / val / test.
+
+    Returns (train_angles, val_angles, test_angles) as numpy arrays (degrees).
+    """
+    pattern = getattr(samples_model, "pattern_data", None)
+    if not pattern or "phi" not in pattern:
+        raise ValueError(
+            "partition_recorded_angles requires a loaded antenna pattern "
+            "(set antenna_pattern: true so pattern_data['phi'] is available).")
+    lo, hi = doa_range
+    grid = np.array(sorted({float(a) for a in np.asarray(pattern["phi"]).ravel()
+                            if lo <= float(a) <= hi}))
+    if len(grid) < 3:
+        raise ValueError(f"Recorded angle grid within {doa_range} has only {len(grid)} points.")
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(len(grid))
+    n = len(grid)
+    n_tr = max(1, int(round(ratios[0] * n)))
+    n_va = max(1, int(round(ratios[1] * n)))
+    train_angles = np.sort(grid[perm[:n_tr]])
+    val_angles = np.sort(grid[perm[n_tr:n_tr + n_va]])
+    test_angles = np.sort(grid[perm[n_tr + n_va:]])
+    return train_angles, val_angles, test_angles
 
 
 # def read_data(Data_path: str) -> torch.Tensor:
@@ -189,6 +222,15 @@ def set_dataset_filename(system_model_params: SystemModelParams, samples_size: f
 
 class TimeSeriesDataset(Dataset):
     def __init__(self, clean_obs, noise_temps, Y, M):
+        """Initializes the dataset with clean observations, noise templates, labels, and source counts.
+
+        Args:
+        -----
+            clean_obs (list[torch.Tensor]): Per-sample clean (noise-free) observation matrices, each complex of shape (N, T).
+            noise_temps (list[torch.Tensor]): Per-sample unit-variance complex noise templates, each of shape (N, T).
+            Y (list[torch.Tensor]): Per-sample ground-truth labels (DOAs, and ranges for near-field), float32.
+            M (list[int]): Per-sample number of sources.
+        """
         # Base components stored on disk
         self.clean_obs = clean_obs
         self.noise_temps = noise_temps
@@ -200,12 +242,22 @@ class TimeSeriesDataset(Dataset):
         self.params = None  # For on-the-fly generation if not materializing
 
     def __len__(self):
+        """Returns the number of samples in the dataset.
+
+        Returns:
+        --------
+            int: The number of samples.
+        """
         return len(self.clean_obs)
 
     def materialize(self, params: SystemModelParams):
         """
         Pre-computes the entire dataset's noisy observations for a given set of parameters.
         This avoids recalculating samples in __getitem__ during training epochs.
+
+        Args:
+        -----
+            params (SystemModelParams): Parameters (e.g. SNR, T) used to generate the noisy samples.
         """
         print(f"Materializing dataset with SNR={params.snr} and T={params.T}...")
         self.params = params
@@ -220,7 +272,19 @@ class TimeSeriesDataset(Dataset):
         self._materialized_X = None
 
     def _get_single_item_on_the_fly(self, idx):
-        """The core logic for creating a single noisy sample."""
+        """The core logic for creating a single noisy sample.
+
+        Scales the stored noise template to match the configured per-source SNR and
+        number of snapshots, then adds it to the clean observation.
+
+        Args:
+        -----
+            idx (int): Index of the sample to generate.
+
+        Returns:
+        --------
+            tuple: (final_observation (torch.Tensor, complex (N, T)), M (int), Y (torch.Tensor)).
+        """
         if not self.params:
             raise ValueError("System model parameters are not set. Cannot create observation.")
 
@@ -250,6 +314,19 @@ class TimeSeriesDataset(Dataset):
         return final_observation, self.M[idx], self.Y[idx]
 
     def __getitem__(self, idx):
+        """Returns the noisy observation, source count, and label for a given index.
+
+        Uses the pre-computed (materialized) sample if available, otherwise generates
+        the noisy observation on the fly.
+
+        Args:
+        -----
+            idx (int): Index of the sample to retrieve.
+
+        Returns:
+        --------
+            tuple: (observation (torch.Tensor, complex (N, T)), M (int), Y (torch.Tensor)).
+        """
         # If materialized, return the pre-computed sample.
         if self._materialized_X is not None:
             return self._materialized_X[idx], self.M[idx], self.Y[idx]
@@ -258,25 +335,41 @@ class TimeSeriesDataset(Dataset):
         return self._get_single_item_on_the_fly(idx)
 
     def set_system_model_params(self, params: SystemModelParams):
-        """Allows updating the simulation parameters for on-the-fly generation."""
+        """Allows updating the simulation parameters for on-the-fly generation.
+
+        Args:
+        -----
+            params (SystemModelParams): Parameters used for on-the-fly observation generation.
+        """
         self.params = params
 
     def get_metadata(self, idx):
         """
         Returns the metadata for a sample without triggering observation creation.
+
+        Args:
+        -----
+            idx (int): Index of the sample.
+
+        Returns:
+        --------
+            tuple: (M (int) number of sources, Y (torch.Tensor) label).
         """
         return self.M[idx], self.Y[idx]
 
 
 def collate_fn(batch):
     """
-    Collate function for the dataset loader.
+    Collate function for the dataset loader. Pads variable-length labels to a common
+    length and stacks the time-series observations into a batch.
+
     Args:
         batch:  list of tuples, each tuple contains the time series, the number of sources and the labels.
 
     Returns:
-
-
+        tuple: (time_series (torch.Tensor, stacked batch of observations),
+                sources_num (torch.Tensor, per-sample source counts),
+                padded_labels (torch.Tensor, float32 (batch, max_length))).
     """
     time_series, source_num, labels = zip(*batch)
 
@@ -306,6 +399,14 @@ def collate_fn(batch):
 
 class SameLengthBatchSampler(Sampler):
     def __init__(self, data_source, batch_size, shuffle=True):
+        """Initializes the sampler that groups samples with the same source count into batches.
+
+        Args:
+        -----
+            data_source (Dataset | Subset): The dataset (or Subset) to sample from.
+            batch_size (int): Maximum number of samples per batch.
+            shuffle (bool, optional): Whether to shuffle batches and their indices. Defaults to True.
+        """
         super().__init__()
         self.data_source = data_source
         self.batch_size = batch_size
@@ -314,6 +415,15 @@ class SameLengthBatchSampler(Sampler):
         self.batches = self._create_batches()
 
     def _create_batches(self):
+        """Builds batches by grouping sample indices that share the same number of sources.
+
+        Warns if there is a strong imbalance between the largest and smallest source-count
+        groups. Optionally shuffles the resulting batches and their contents.
+
+        Returns:
+        --------
+            list[list[int]]: A list of batches, each a list of sample indices.
+        """
         length_to_indices = {}
 
         # Check if the data_source is a Subset (from random_split) or the original Dataset
@@ -354,14 +464,38 @@ class SameLengthBatchSampler(Sampler):
         return batches
 
     def __iter__(self):
+        """Iterates over the pre-built batches.
+
+        Yields:
+        -------
+            list[int]: A batch of sample indices.
+        """
         for batch in self.batches:
             yield batch
 
     def __len__(self):
+        """Returns the number of batches.
+
+        Returns:
+        --------
+            int: The number of batches.
+        """
         return len(self.batches)
 
     def get_data_source_length(self):
+        """Returns the total number of samples in the underlying data source.
+
+        Returns:
+        --------
+            int: The number of samples.
+        """
         return len(self.data_source)
 
     def get_max_batch_length(self):
+        """Returns the size of the largest batch.
+
+        Returns:
+        --------
+            int: The maximum number of samples in any batch.
+        """
         return max([len(batch) for batch in self.batches])

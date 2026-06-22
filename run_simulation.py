@@ -20,6 +20,11 @@ from src.steering_vector_generator import SteeringVectorGenerator
 
 class SimulationRunner:
     def __init__(self, config: SimulationConfig):
+        """Initialize the simulation runner and prepare output directories.
+
+        Args:
+            config (SimulationConfig): Parsed simulation configuration.
+        """
         self.config = config
         self.base_path = Path(__file__).parent / "data"
         self.paths = self._init_paths()
@@ -27,6 +32,11 @@ class SimulationRunner:
 
 
     def _init_paths(self):
+        """Build and create the dataset/weights/simulations directory layout.
+
+        Returns:
+            dict: Mapping of path names ('datasets', 'saving', 'simulations') to Path objects.
+        """
         paths = {
             "datasets": self.base_path / "datasets" / "uniform_bias_spacing",
             "saving": self.base_path / "weights",
@@ -37,6 +47,15 @@ class SimulationRunner:
         return paths
 
     def train_model(self, model_gen, train_dataset):
+        """Build training parameters, train the model, and optionally save weights.
+
+        Args:
+            model_gen (ModelGenerator): Factory holding the instantiated model.
+            train_dataset (Dataset): Materialized training dataset.
+
+        Returns:
+            nn.Module: The trained model (best weights loaded).
+        """
         config = self.config
         simulation_parameters = (
             TrainingParams()
@@ -68,6 +87,16 @@ class SimulationRunner:
         return model
 
     def evaluate_model(self, model, system_model, test_dataset):
+        """Evaluate a trained model plus configured baselines on the test set.
+
+        Args:
+            model (nn.Module): Trained model to evaluate (may be None).
+            system_model (SystemModel): Array geometry / steering model.
+            test_dataset (Dataset): Materialized test dataset.
+
+        Returns:
+            dict: Nested results dict keyed by criterion and method name.
+        """
         config = self.config
         test_loader = torch.utils.data.DataLoader(
             test_dataset,
@@ -96,6 +125,16 @@ class SimulationRunner:
         )
 
     def get_dataset(self, create_data, samples_model):
+        """Create or load the train and/or test datasets per the active commands.
+
+        Args:
+            create_data (bool): If True, generate datasets; otherwise load from disk.
+            samples_model (Samples): Signal sample generator for the system model.
+
+        Returns:
+            tuple: (train_dataset, test_dataset), either of which may be None
+                depending on the train_model / evaluate_mode commands.
+        """
         config = self.config
         train_dataset = None
         test_dataset = None
@@ -136,6 +175,14 @@ class SimulationRunner:
         return train_dataset, test_dataset
 
     def _run_single_simulation(self, create_dataset):
+        """Run one full create-data -> train -> evaluate pass for the current config.
+
+        Args:
+            create_dataset (bool): Whether to generate fresh datasets for this run.
+
+        Returns:
+            dict or None: Evaluation results dict if evaluate_mode is enabled, else None.
+        """
         config = self.config
 
         # Redirect stdout to file if enabled
@@ -181,6 +228,13 @@ class SimulationRunner:
         return result
 
     def run(self):
+        """Run the simulation, either once or swept over the configured scenario.
+
+        Returns:
+            dict or None: For a single run, the evaluation results dict (or None).
+                For a scenario sweep, a nested dict keyed by scenario parameter and
+                value holding the averaged losses.
+        """
         create_data = self.config.commands.create_data
         if not self.config.scenario:
             return self._run_single_simulation(create_data)

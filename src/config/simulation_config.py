@@ -31,7 +31,7 @@ class SystemModelParams:
     sv_noise_var: float = 0.0
     freq_values: list = field(default_factory=lambda: [0, 500])
     antenna_pattern: bool = True
-    antenna_pattern_file: Optional[str] = "D:\\HHData\\users\\Daniel\\HofHakshatotAuxilary\\Data\\Steering\\ULA3\\SteeringData_Low.mat"  # Path to .mat file containing antenna pattern data
+    antenna_pattern_file: Optional[str] = "C:\\GitHub\\Hof\\Auxiliary\\Data\\Steering\\ULA3\\SteeringData_Mid.mat"  # Real measured ULA3 steering data (Mid band: 136-550 MHz). Low=30-136, High=550-1600.
     doa_range: list = field(default_factory=lambda: (-60, 60))
     min_gap: int = 10
 

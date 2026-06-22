@@ -22,6 +22,9 @@ from src.models_pack.deep_cnn import DeepCNN
 from src.models_pack.deep_root_music import DeepRootMUSIC
 from src.models_pack.sparse_net import SparseNet
 from src.models_pack.sparse_cov_admm_unfold import DUNCS
+from src.models_pack.du_mfocuss import DUMFOCUSS
+from src.models_pack.doa_former import DoAFormer
+from src.models_pack.mfocuss import MFOCUSS
 from src.config.simulation_config import SystemModelParams
 from src.utils import device
 
@@ -141,12 +144,27 @@ class ModelGenerator(object):
             self.__set_sparse_net()
         elif self.model_type.startswith("DUNCS"):
             self.__set_duncs()
+        elif self.model_type.startswith("DUMFOCUSS"):
+            self.__set_du_mfocuss()
+        elif self.model_type.startswith("MFOCUSS"):
+            self.__set_mfocuss()
+        elif self.model_type.startswith("DoAFormer"):
+            self.__set_doa_former()
         else:
             raise Exception(f"ModelGenerator.set_model: Model type {self.model_type} is not defined")
 
         return self
 
     def load_model(self, state_dict_path: str = None):
+        """Loads saved weights into the generated model.
+
+        Args:
+            state_dict_path (str, optional): Path to the saved state dict. Defaults to
+                the final_models path derived from the model file name.
+
+        Returns:
+            nn.Module: The model with loaded weights.
+        """
         if state_dict_path is None:
             state_dict_path = self.paths["saving"] / "final_models" / self.model.get_model_file_name()
 
@@ -156,60 +174,68 @@ class ModelGenerator(object):
 
 
     def __set_subspacenet(self):
-        """
-
-        """
+        """Instantiates a SubspaceNet model from the current params into self.model."""
         self.model = SubspaceNet(system_model=self.system_model, **self.model_params)
 
     def __set_dcd_music(self):
-        """
-
-        """
+        """Instantiates a DCDMUSIC model from the current params into self.model."""
         tau = self.model_params.get("tau")
         self.model = DCDMUSIC(tau=tau,
                               system_model=self.system_model)
 
     def __set_transmusic(self):
-        """
-
-        """
+        """Instantiates a TransMUSIC model from the current params into self.model."""
         self.model = TransMUSIC(system_model=self.system_model)
 
     def __set_deepcnn(self):
-        """
-
-        """
+        """Instantiates a DeepCNN model (using N and grid_size) into self.model."""
         N = self.system_model.params.N
         grid_size = self.model_params.get("grid_size")
         self.model = DeepCNN(N=N, grid_size=grid_size)
 
     def __set_da_music(self):
-        """
-
-        """
+        """Instantiates a DeepAugmentedMUSIC model (using N, T, M) into self.model."""
         N = self.system_model.params.N
         T = self.system_model.params.T
         M = self.system_model.params.M
         self.model = DeepAugmentedMUSIC(N=N, T=T, M=M)
 
     def __set_dr_music(self):
-        """
-
-        """
+        """Instantiates a DeepRootMUSIC model (using tau and activation_value) into self.model."""
         tau = self.model_params.get("tau")
         activation_val = self.model_params.get("activation_value")
         self.model = DeepRootMUSIC(tau=tau, activation_value=activation_val)
 
     def __set_sparse_net(self):
+        """Instantiates a SparseNet model from the current params into self.model."""
         self.model = SparseNet(system_model=self.system_model, **self.model_params)
 
     def __set_duncs(self):
+        """Instantiates a DUNCS model from the current params into self.model."""
         self.model = DUNCS(system_model=self.system_model, **self.model_params)
+
+    def __set_du_mfocuss(self):
+        """Instantiates a DU-MFOCUSS model from the current params into self.model."""
+        self.model = DUMFOCUSS(system_model=self.system_model, **self.model_params)
+
+    def __set_mfocuss(self):
+        """Instantiates a classical MFOCUSS baseline from the current params into self.model."""
+        self.model = MFOCUSS(system_model=self.system_model, **self.model_params)
+
+    def __set_doa_former(self):
+        """Instantiates a DoAFormer model from the current params into self.model."""
+        self.model = DoAFormer(system_model=self.system_model, **self.model_params)
 
     def __verify_model_params(self, model_params):
         """
         There are different models, and each one has different set of parameters to set.
         This function just verify the correctness of the params depending on the model.
+
+        Args:
+            model_params (dict): The model-specific parameters to validate.
+
+        Raises:
+            ValueError: If no verification is supported for the current model type.
         """
 
         if self.model_type.lower() == "subspacenet":
@@ -218,19 +244,29 @@ class ModelGenerator(object):
             self.__verify_dcdmuisc_params(model_params)
         elif self.model_type.lower() == "transmusic":
             self.__verify_transmusic_params(model_params)
+        elif self.model_type.lower() in ("dumfocuss", "doaformer", "mfocuss"):
+            pass  # No constraints on these models' params.
         else:
             raise ValueError(f"ModelGenerator.__verify_model_params:"
                              f" currently there is no verification support for {self.model_type}")
 
     def __verify_transmusic_params(self, model_params):
-        """
+        """Verifies TransMUSIC model parameters (no-op; no constraints currently).
 
+        Args:
+            model_params (dict): The TransMUSIC model parameters.
         """
         pass
 
     def __verify_subspacenet_params(self, model_params):
-        """
-        tau: int, diff_method: str = "root_music", field_type: str = "Far"
+        """Verifies SubspaceNet model parameters (tau, field_type, diff_method).
+
+        Args:
+            model_params (dict): Expects keys tau (int < T), field_type ("far"/"near"),
+                and diff_method (valid for the chosen field type).
+
+        Raises:
+            ValueError: If any parameter is missing or invalid for the field type.
         """
         tau = model_params.get("tau")
         if not isinstance(tau, int) or not (tau < self.system_model.params.T):
@@ -257,8 +293,13 @@ class ModelGenerator(object):
                              f"field type was not given as a model param.")
 
     def __verify_dcdmuisc_params(self, model_params):
-        """
-        tau: int
+        """Verifies DCDMUSIC model parameters (tau).
+
+        Args:
+            model_params (dict): Expects key tau (int < T).
+
+        Raises:
+            ValueError: If tau is not an int or is not smaller than T.
         """
         tau = model_params.get("tau")
         if not isinstance(tau, int) or not (tau < self.system_model.params.T):
@@ -267,11 +308,22 @@ class ModelGenerator(object):
 
 
     def __str__(self):
+        """Returns the generated model's name as a string."""
         return f"{self.model.get_model_name()}"
 
 
 
 def get_model(model_name: str, params: dict, system_model: SystemModel):
+    """Builds a model and loads its saved weights from disk.
+
+    Args:
+        model_name (str): The model type key (e.g. "DUNCS", "SparseNet").
+        params (dict): The model-specific parameters.
+        system_model (SystemModel): Array geometry and signal parameters.
+
+    Returns:
+        nn.Module: The instantiated model on device, with weights loaded if found.
+    """
     model_config = (
         ModelGenerator()
         .set_model_type(model_name)

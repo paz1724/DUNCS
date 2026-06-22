@@ -26,6 +26,7 @@ model:
     criterion: "rmspe"                    # Loss criterion: "rmspe" (root mean squared phase error) or "admm_objective"
     mu: ${admm_params.mu}                 # ADMM mu parameter (pulled from top-level admm_params)
     rho: ${admm_params.rho}               # ADMM rho parameter (pulled from top-level admm_params)
+    eigen_regularization_weight: 1.0      # Weight on the source-count (model-order) loss. 0 = counter untrained.
 
 
 training:

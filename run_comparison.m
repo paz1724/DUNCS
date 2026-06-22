@@ -2,7 +2,7 @@
 %  MATLAB wrapper for DUNCS vs SparseNet (and any future model) comparison.
 %
 %  Reads models_config.json, calls Python to train each model,
-%  reads the raw JSON output, and creates overlaid comparison plots.
+%  reads the raw .mat output, and creates overlaid comparison plots.
 %  Saves every figure as .fig and .png.
 %
 %  Usage:
@@ -41,7 +41,7 @@ for i = 1:numel(model_names)
     name     = model_names{i};
     cfg_path = config.models.(name).config_path;
 
-    result_file = fullfile(output_dir, [name '_results.json']);
+    result_file = fullfile(output_dir, [name '_results.mat']);
 
     fprintf('--- Training %s ---\n', name);
     cmd = sprintf( ...
@@ -70,11 +70,11 @@ fprintf('========================================\n\n');
 results = struct();
 for i = 1:numel(model_names)
     name = model_names{i};
-    result_file = fullfile(output_dir, [name '_results.json']);
-    data = jsondecode(fileread(result_file));
+    result_file = fullfile(output_dir, [name '_results.mat']);
+    data = load(result_file);
     results.(name) = data;
     fprintf('Loaded %s: %d epochs, test RMSPE = %.6f\n', ...
-        name, numel(data.training.epochs), data.evaluation.test_rmspe);
+        name, numel(data.epochs), data.test_rmspe);
 end
 
 %% ---- Phase 3: Create comparison plots ----
@@ -88,7 +88,7 @@ hold all; grid on;
 legend_entries = {};
 for i = 1:numel(model_names)
     name = model_names{i};
-    d = results.(name).training;
+    d = results.(name);
     plot(d.epochs, d.loss_train, '-', 'Color', colors_solid(i,:), 'LineWidth', 2);
     legend_entries{end+1} = name; %#ok<SAGROW>
 end
@@ -107,7 +107,7 @@ hold all; grid on;
 legend_entries = {};
 for i = 1:numel(model_names)
     name = model_names{i};
-    d = results.(name).training;
+    d = results.(name);
     plot(d.epochs, d.loss_valid, '-', 'Color', colors_solid(i,:), 'LineWidth', 2);
     legend_entries{end+1} = name; %#ok<SAGROW>
 end
@@ -127,7 +127,7 @@ legend_entries = {};
 h_lines = [];
 for i = 1:numel(model_names)
     name = model_names{i};
-    d = results.(name).training;
+    d = results.(name);
     h1 = plot(d.epochs, d.loss_train, '-', 'Color', colors_solid(i,:), 'LineWidth', 2);
     h2 = plot(d.epochs, d.loss_valid, '--', 'Color', colors_dashed(i,:), 'LineWidth', 2);
     h_lines = [h_lines, h1, h2]; %#ok<AGROW>
@@ -147,7 +147,7 @@ fprintf('Saved: train_valid_loss_comparison\n');
 has_accuracy = false(numel(model_names), 1);
 for i = 1:numel(model_names)
     name = model_names{i};
-    acc = results.(name).training.acc_train;
+    acc = results.(name).acc_train;
     has_accuracy(i) = ~isempty(acc) && any(acc > 0);
 end
 
@@ -156,12 +156,10 @@ if any(has_accuracy)
     hold all; grid on;
     legend_entries = {};
     h_lines = [];
-    idx = 0;
     for i = 1:numel(model_names)
         if ~has_accuracy(i), continue; end
-        idx = idx + 1;
         name = model_names{i};
-        d = results.(name).training;
+        d = results.(name);
         h1 = plot(d.epochs, d.acc_train, '-', 'Color', colors_solid(i,:), 'LineWidth', 2);
         h2 = plot(d.epochs, d.acc_valid, '--', 'Color', colors_dashed(i,:), 'LineWidth', 2);
         h_lines = [h_lines, h1, h2]; %#ok<AGROW>
@@ -187,14 +185,14 @@ bar_colors_list = [];
 for i = 1:numel(model_names)
     name = model_names{i};
     bar_names{end+1} = name; %#ok<SAGROW>
-    bar_values(end+1) = results.(name).evaluation.test_rmspe; %#ok<SAGROW>
+    bar_values(end+1) = results.(name).test_rmspe; %#ok<SAGROW>
     bar_colors_list = [bar_colors_list; colors_solid(i,:)]; %#ok<AGROW>
 end
 
 % Add classical ESPRIT from the first model's results
 first_model = model_names{1};
 bar_names{end+1} = 'ESPRIT (classical)';
-bar_values(end+1) = results.(first_model).evaluation.esprit_rmspe;
+bar_values(end+1) = results.(first_model).esprit_rmspe;
 bar_colors_list = [bar_colors_list; 0.3 0.7 0.3];
 
 b = bar(bar_values, 'FaceColor', 'flat', 'EdgeColor', 'k', 'LineWidth', 1.2);
@@ -223,8 +221,8 @@ fprintf('%-25s %12s %12s\n', 'Method', 'Test RMSPE', 'Accuracy');
 fprintf('%s\n', repmat('-', 1, 50));
 for i = 1:numel(model_names)
     name = model_names{i};
-    rmspe = results.(name).evaluation.test_rmspe;
-    acc   = results.(name).evaluation.test_accuracy;
+    rmspe = results.(name).test_rmspe;
+    acc   = results.(name).test_accuracy;
     if isempty(acc) || acc == 0
         acc_str = 'N/A';
     else
@@ -233,7 +231,7 @@ for i = 1:numel(model_names)
     fprintf('%-25s %12.6f %12s\n', name, rmspe, acc_str);
 end
 fprintf('%-25s %12.6f %12s\n', 'ESPRIT (classical)', ...
-    results.(first_model).evaluation.esprit_rmspe, 'N/A');
+    results.(first_model).esprit_rmspe, 'N/A');
 
 fprintf('\nPlots saved to: %s\n', plots_dir);
 fprintf('Done!\n');

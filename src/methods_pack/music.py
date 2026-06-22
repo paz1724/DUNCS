@@ -19,11 +19,12 @@ class MUSIC(SubspaceMethod):
     """
 
     def __init__(self, system_model: SystemModel, estimation_parameter: str):
-        """
+        """Initialize the MUSIC estimator, build the search grid and smoothing cells.
 
         Args:
-            system_model:
-            estimation_parameter:
+            system_model (SystemModel): Array geometry and field-type configuration.
+            estimation_parameter (str): What to estimate; one of "angle", "range",
+                or "angle, range".
         """
         super().__init__(system_model)
         self.estimation_params = estimation_parameter
@@ -86,11 +87,21 @@ class MUSIC(SubspaceMethod):
         return params, source_estimation, eigen_regularization
 
     def get_music_spectrum_from_noise_subspace(self, noise_subspace):
+        """Compute and store the MUSIC spectrum as the reciprocal of the inverse spectrum.
+
+        Args:
+            noise_subspace (torch.Tensor): Noise-subspace eigenvectors, shape
+                (BatchSize, #Sensors, #Sensors - #Sources).
+
+        Returns:
+            torch.Tensor: The MUSIC spectrum (1 / inverse spectrum).
+        """
         inverse_spectrum = self.get_inverse_spectrum(noise_subspace.to(torch.complex128))
         self.music_spectrum = 1 / inverse_spectrum
         return self.music_spectrum
 
     def adjust_cell_size(self):
+        """Shrink the soft-decision smoothing cell size(s) by ~5%, keeping them odd and bounded."""
         if self.estimation_params == "range":
             if self.cell_size > 1 or self.cell_size > int(self.distances.shape[0] * 0.02):
                 self.cell_size = int(0.95 * self.cell_size)
@@ -172,6 +183,12 @@ class MUSIC(SubspaceMethod):
                 return self._peak_finder_1d(self.distances, source_number)
 
     def set_search_grid(self, known_angles: torch.Tensor = None, known_distances: torch.Tensor = None):
+        """Build the steering-vector search grid for the configured field type.
+
+        Args:
+            known_angles (torch.Tensor, optional): Fixed angles for Near-field range estimation.
+            known_distances (torch.Tensor, optional): Fixed distances for Near-field angle estimation.
+        """
         if self.system_model.params.field_type.startswith("Far"):
             self.__set_search_grid_far_field()
         elif self.system_model.params.field_type.startswith("Near"):
@@ -180,6 +197,23 @@ class MUSIC(SubspaceMethod):
             raise ValueError(f"MUSIC.set_search_grid: Unrecognized field type: {self.system_model.params.field_type}")
 
     def __set_search_grid_far_field(self):
+        """Build the Far-field steering-vector search grid over the angle dictionary.
+
+        Uses the recorded antenna-pattern manifold when available, otherwise constructs
+        steering vectors from the (possibly sparse) array geometry. Stores the result in
+        self.search_grid.
+        """
+        # Recorded-manifold dictionary: when a measured antenna pattern is loaded,
+        # search the *recorded* steering matrix directly. No element positions /
+        # spacing are needed — the recorded A is the calibrated manifold. This keeps
+        # the estimation manifold matched to the data-generation manifold.
+        if (not self.system_model.is_sparse_array
+                and getattr(self.system_model.params, "antenna_pattern", False)
+                and getattr(self.system_model, "pattern_data", None) is not None):
+            theta_np = self.angels.detach().cpu().numpy()
+            sv = np.asarray(self.system_model.steering_vec(theta_np))  # (N_elements, K_angles)
+            self.search_grid = torch.as_tensor(sv, dtype=torch.complex128, device=device)
+            return
         if self.system_model.is_sparse_array:
             # TODO: Support both virtual array ula segment, and the entire virtual array
             max_element = self.system_model.array.max()
@@ -196,10 +230,13 @@ class MUSIC(SubspaceMethod):
         self.search_grid = torch.exp(-2 * 1j * torch.pi * time_delay)
 
     def __set_search_grid_near_field(self, known_angles: torch.Tensor = None, known_distances: torch.Tensor = None):
-        """
+        """Build the Near-field steering-vector search grid (Fresnel second-order phase model).
 
-        Returns:
+        Args:
+            known_angles (torch.Tensor, optional): Fixed angles; if None, uses self.angels grid.
+            known_distances (torch.Tensor, optional): Fixed distances; if None, uses self.distances grid.
 
+        The resulting steering grid is stored in self.search_grid.
         """
         dist_array_elems = self.system_model.dist_array_elems["NarrowBand"]
         if known_angles is None:
@@ -235,12 +272,29 @@ class MUSIC(SubspaceMethod):
         self.search_grid = torch.exp(2 * -1j * torch.pi * time_delay)
 
     def plot_spectrum(self, highlight_corrdinates=None, batch: int = 0, method: str = "heatmap"):
+        """Plot the MUSIC spectrum (1D for single-param, 3D/heatmap for angle-range).
+
+        Args:
+            highlight_corrdinates: Ground-truth coordinates to overlay on the plot.
+            batch (int): Index of the batch element to plot.
+            method (str): Plot style for the 2D case ("heatmap", "3D", or "slice").
+        """
         if self.estimation_params == "angle, range":
             self._plot_3d_spectrum(highlight_corrdinates, batch, method)
         else:
             self._plot_1d_spectrum(highlight_corrdinates, batch)
 
     def _peak_finder_1d(self, search_space, source_number: int = None):
+        """Find the top source_number peaks of the 1D MUSIC spectrum per batch element.
+
+        Args:
+            search_space (torch.Tensor): Candidate parameter grid (angles or distances).
+            source_number (int, optional): Number of peaks to return; defaults to model M.
+
+        Returns:
+            torch.Tensor: Estimated parameters; hard-decision grid values when not training,
+                otherwise differentiable soft-decision estimates of shape (batch, source_number).
+        """
         if source_number is None:
             source_number = self.system_model.params.M
         if self.estimation_params == "range":
@@ -269,6 +323,15 @@ class MUSIC(SubspaceMethod):
             return self.__maskpeak_1d(peaks, search_space, source_number)
 
     def _peak_finder_2d(self, source_number: int = None):
+        """Find the top source_number peaks of the 2D (angle x range) MUSIC spectrum per batch.
+
+        Args:
+            source_number (int, optional): Number of peaks to return; defaults to model M.
+
+        Returns:
+            tuple: (angles_pred, distances_pred) hard-decision grid values when not training,
+                otherwise differentiable soft-decision (soft_row, soft_col) estimates.
+        """
         if source_number is None:
             source_number = self.system_model.params.M
         batch_size = self.music_spectrum.shape[0]
@@ -301,7 +364,16 @@ class MUSIC(SubspaceMethod):
             return self.__maskpeak_2d(max_row, max_col, source_number)
 
     def __maskpeak_1d(self, peaks, search_space, source_number: int = None):
+        """Compute differentiable soft-decision 1D estimates via softmax over cells around each peak.
 
+        Args:
+            peaks (torch.Tensor): Integer peak indices, shape (batch, source_number).
+            search_space (torch.Tensor): Candidate parameter grid (angles or distances).
+            source_number (int, optional): Number of sources/peaks.
+
+        Returns:
+            torch.Tensor: Soft-decision estimates of shape (batch, source_number).
+        """
         batch_size = self.music_spectrum.shape[0]
         soft_decision = torch.zeros(batch_size, source_number, dtype=torch.float64, device=device)
         top_indxs = peaks.to(device)
@@ -321,6 +393,17 @@ class MUSIC(SubspaceMethod):
         return soft_decision
 
     def __maskpeak_2d(self, peaks_r, peaks_c, source_number):
+        """Compute differentiable soft-decision 2D estimates via softmax over angle-range cells.
+
+        Args:
+            peaks_r (torch.Tensor): Integer row (angle) peak indices, shape (batch, source_number).
+            peaks_c (torch.Tensor): Integer column (range) peak indices, shape (batch, source_number).
+            source_number (int): Number of sources/peaks.
+
+        Returns:
+            tuple: (soft_row, soft_col) soft-decision angle and range estimates,
+                each of shape (batch, source_number).
+        """
         batch_size = self.music_spectrum.shape[0]
         soft_row = torch.zeros((batch_size, source_number), device=device)
         soft_col = torch.zeros((batch_size, source_number), device=device)
@@ -352,6 +435,11 @@ class MUSIC(SubspaceMethod):
         return soft_row, soft_col
 
     def _init_spectrum(self, batch_size):
+        """Allocate the zero-initialized MUSIC spectrum tensor for the given batch size.
+
+        Args:
+            batch_size (int): Number of samples in the batch.
+        """
         if self.system_model.params.field_type == "Far":
             self.music_spectrum = torch.zeros(batch_size, len(self.angels))
         else:
@@ -363,6 +451,11 @@ class MUSIC(SubspaceMethod):
                 self.music_spectrum = torch.zeros(batch_size, len(self.distances))
 
     def __define_grid_params(self):
+        """Initialize the angle and/or distance search grids based on field type and estimation params.
+
+        Raises:
+            ValueError: If the system model field type is neither Far nor Near.
+        """
         if self.system_model.params.field_type.startswith("Far"):
             # if it's the Far field case, need to init angles range.
             doa_range = np.deg2rad(self.system_model.params.doa_range)
@@ -384,7 +477,7 @@ class MUSIC(SubspaceMethod):
                              f" got {self.system_model.params.field_type} but only Far and Near are allowed.")
 
     def __init_cells(self):
-
+        """Initialize the soft-decision smoothing cell size(s), forcing each to be odd."""
         if self.estimation_params == "range":
             self.cell_size = int(self.distances.shape[0] * 0.3)
         elif self.estimation_params == "angle":
@@ -404,6 +497,12 @@ class MUSIC(SubspaceMethod):
                 self.cell_size_distance += 1
 
     def _plot_1d_spectrum(self, highlight_corrdinates, batch):
+        """Plot the 1D MUSIC spectrum (angle or range) with optional ground-truth markers.
+
+        Args:
+            highlight_corrdinates: Ground-truth coordinates to overlay as dashed lines.
+            batch (int): Index of the batch element to plot.
+        """
         if self.estimation_params == "angle":
             x = np.rad2deg(self.angels.detach().cpu().numpy())
             x_label = "angle [deg]"
@@ -428,9 +527,12 @@ class MUSIC(SubspaceMethod):
         plt.show()
 
     def _plot_3d_spectrum(self, highlight_coordinates, batch, method):
-        """
-        Plot the MUSIC 2D spectrum.
+        """Plot the MUSIC 2D (angle x range) spectrum.
 
+        Args:
+            highlight_coordinates: Ground-truth coordinates to overlay on the plot.
+            batch (int): Index of the batch element to plot.
+            method (str): Rendering style: "3D" surface, "heatmap", or "slice".
         """
         if method == "3D":
             # Creating figure
@@ -506,10 +608,21 @@ class MUSIC(SubspaceMethod):
             plt.show()
 
     def __str__(self):
+        """Return a short string identifier including the estimation parameters."""
         return f"music_{self.estimation_params}"
 
 
 def keep_far_enough_points(tensor, M, D):
+    """Select up to M columns whose x-coordinates are at least D apart.
+
+    Args:
+        tensor (torch.Tensor): 2D index tensor where row 0 holds x-coordinates.
+        M (int): Maximum number of columns to keep.
+        D (float): Minimum required spacing in the x-coordinate between kept columns.
+
+    Returns:
+        torch.Tensor: The filtered subset of columns satisfying the spacing criterion.
+    """
     # # Calculate pairwise distances between columns
     # distances = cdist(tensor.T, tensor.T, metric="euclidean")
     #
@@ -547,6 +660,13 @@ def keep_far_enough_points(tensor, M, D):
 
 class Filter(nn.Module):
     def __init__(self, min_cell_size, max_cell_size, number_of_filter=10):
+        """Build a bank of fixed-size smoothing cells and a learnable linear combiner.
+
+        Args:
+            min_cell_size (int): Smallest cell half-width in the filter bank.
+            max_cell_size (int): Largest cell half-width in the filter bank.
+            number_of_filter (int): Number of cell sizes (filters) in the bank.
+        """
         super(Filter, self).__init__()
         self.number_of_filters = number_of_filter
         self.cell_sizes = torch.linspace(min_cell_size, max_cell_size, number_of_filter).to(torch.int32).to(device)
@@ -563,6 +683,15 @@ class Filter(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, input, search_space):
+        """Estimate a parameter per sample by combining soft-decision outputs over the cell bank.
+
+        Args:
+            input (torch.Tensor): MUSIC spectrum, shape (batch, grid_length).
+            search_space (torch.Tensor): Candidate parameter grid (angles or distances).
+
+        Returns:
+            torch.Tensor: Non-negative estimated parameter per sample, shape (batch, 1).
+        """
         peaks = torch.zeros(input.shape[0], 1).to(torch.int64)
         for batch in range(peaks.shape[0]):
             music_spectrum = input[batch].cpu().detach().numpy().squeeze()
@@ -590,5 +719,30 @@ class Filter(nn.Module):
         return output
 
     def clip_weights_values(self):
+        """Clip the combiner weights to [0.1, 1] and renormalize them to sum to one."""
         self.fc.weight.data = torch.clip(self.fc.weight.data, 0.1, 1)
         self.fc.weight.data /= torch.sum(self.fc.weight.data)
+
+
+class MVDR(MUSIC):
+    """Differentiable MVDR / Capon beamformer readout (P(θ) = 1 / aᴴ R⁻¹ a).
+
+    Subclasses MUSIC to reuse the angle search grid and the differentiable soft peak-finder,
+    but replaces the noise-subspace spectrum with the minimum-variance (Capon) spectrum, so it
+    can serve as a SubspaceNet readout trained end-to-end on the learned covariance.
+    """
+
+    def forward(self, cov: torch.Tensor, number_of_sources: int, known_angles=None,
+                known_distances=None, is_soft: bool = True):
+        M = number_of_sources
+        R = cov.to(torch.complex128)
+        N = R.shape[-1]
+        eye = torch.eye(N, dtype=torch.complex128, device=R.device)
+        Rinv = torch.linalg.solve(R + 1e-3 * eye, eye.expand(R.shape[0], N, N))   # [B,N,N]
+        A = self.search_grid.to(torch.complex128).to(R.device)                    # [N,G]
+        tmp = torch.einsum("bnm,mg->bng", Rinv, A)                                # [B,N,G]
+        denom = torch.einsum("ng,bng->bg", A.conj(), tmp).real                    # [B,G] = aᴴR⁻¹a
+        self.music_spectrum = 1.0 / (denom + 1e-9)                                # Capon spectrum
+        params = self.peak_finder(M)
+        src_est = torch.full((R.shape[0],), int(M), device=R.device)
+        return params, src_est, torch.tensor(0.0, device=R.device)

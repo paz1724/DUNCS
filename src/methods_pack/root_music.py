@@ -8,9 +8,25 @@ from src.utils import *
 
 class RootMusic(SubspaceMethod):
     def __init__(self, system_model: SystemModel):
+        """Initialize the Root-MUSIC subspace estimator.
+
+        Args:
+            system_model (SystemModel): Array geometry and parameters.
+        """
         super(RootMusic, self).__init__(system_model)
 
     def forward(self, cov: torch.Tensor, sources_num: torch.tensor = None):
+        """Estimate DoAs from a covariance matrix using Root-MUSIC.
+
+        Args:
+            cov (torch.Tensor): Covariance matrix, shape [B, N, N].
+            sources_num (int, optional): Number of sources M; defaults to the
+                system model's M if None.
+
+        Returns:
+            tuple: (angles_prediction [B, M], angles_prediction_all for all roots,
+                roots [B, 2N-2]).
+        """
         if sources_num is None:
             M = self.system_model.params.M
         else:
@@ -27,12 +43,29 @@ class RootMusic(SubspaceMethod):
         return angles_prediction, angles_prediction_all, roots
 
     def get_doa_from_roots(self, roots):
+        """Convert polynomial roots to DoA angles (radians).
+
+        Args:
+            roots (torch.Tensor): Complex polynomial roots, shape [B, K].
+
+        Returns:
+            torch.Tensor: Predicted angles in radians, shape [B, K].
+        """
         roots_phase = torch.angle(roots)
         angle_predicted = torch.arcsin(
             (1 / (2 * np.pi * self.system_model.dist_array_elems["NarrowBand"])) * roots_phase)
         return angle_predicted
 
     def extract_roots_closest_unit_circle(self, roots, k: int):
+        """Select the k roots closest to the unit circle.
+
+        Args:
+            roots (torch.Tensor): Complex roots, shape [B, R].
+            k (int): Number of roots to keep.
+
+        Returns:
+            torch.Tensor: The k closest roots, shape [B, k].
+        """
         distances = torch.abs(torch.abs(roots) - 1)
         sorted_indcies = torch.argsort(distances, dim=1)
         k_closest = sorted_indcies[:, :k]
@@ -40,6 +73,14 @@ class RootMusic(SubspaceMethod):
         return closest_roots
 
     def sum_of_diag(self, tensor: torch.Tensor):
+        """Sum the elements along each diagonal of a batch of square matrices.
+
+        Args:
+            tensor (torch.Tensor): Square matrices, shape [B, N, N] (or [N, N]).
+
+        Returns:
+            torch.Tensor: Diagonal sums (polynomial coefficients), shape [B, 2N-1].
+        """
         tensor = self.__check_diag_sums_dim(tensor)
         N = tensor.shape[-1]
         diag_indcies = torch.linspace(-N + 1, N - 1, 2 * N - 1, dtype=torch.int)
@@ -49,6 +90,14 @@ class RootMusic(SubspaceMethod):
         return sum_of_diags
 
     def find_roots(self, coeffs: torch.Tensor):
+        """Find polynomial roots via the companion-matrix eigenvalues.
+
+        Args:
+            coeffs (torch.Tensor): Polynomial coefficients, shape [B, D].
+
+        Returns:
+            torch.Tensor: Complex roots, shape [B, D-1].
+        """
         A = torch.diag(torch.ones(coeffs.shape[-1] - 2, dtype=coeffs.dtype), -1)  # -1 means the diagonal below the main diagonal
         A = A.repeat(coeffs.shape[0], 1, 1)  # repeat for all elements in the batch
         A[:, 0, :] = -coeffs[:, 1:] / coeffs[:, 0].unsqueeze(1)
@@ -56,6 +105,14 @@ class RootMusic(SubspaceMethod):
         return roots
 
     def __check_diag_sums_dim(self, tensor):
+        """Validate/normalize the input tensor to a batched square-matrix shape.
+
+        Args:
+            tensor (torch.Tensor): Input of shape [N, N] or [B, N, N].
+
+        Returns:
+            torch.Tensor: Tensor of shape [B, N, N].
+        """
         if len(tensor.shape) != 3:
             if len(tensor.shape) == 2:
                 tensor = tensor.unsqueeze(0)

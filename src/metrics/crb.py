@@ -2,10 +2,15 @@ import math
 import torch
 
 def _vecF_4d_to_2d(x: torch.Tensor) -> torch.Tensor:
-    """
-    Column-major vectorization on the last two dims:
-      x: (B, U, U, K) -> (B, U*U, K)
-    We transpose the U-dims then row-major reshape, which equals Fortran vec.
+    """Column-major (Fortran) vectorization of the last two dims of a 4D tensor.
+
+    Transposes the U-dims then row-major reshapes, which equals Fortran vec.
+
+    Args:
+        x (torch.Tensor): Input tensor of shape (B, U, U, K).
+
+    Returns:
+        torch.Tensor: Vectorized tensor of shape (B, U*U, K).
     """
     B, U, U2, K = x.shape
     assert U == U2, "expected (B,U,U,K)"
@@ -13,9 +18,18 @@ def _vecF_4d_to_2d(x: torch.Tensor) -> torch.Tensor:
 
 
 def _broadcast_theta_snr_L(thetas_rad, snr_db, L, device):
-    """
-    Make thetas -> (B,K), snr_db -> (B,K), L -> (B,)
-    Accepts scalars, (K,), (B,), or (B,K).
+    """Broadcast angles, SNR, and snapshot counts to a common batch size B.
+
+    Accepts scalars, (K,), (B,), or (B,K) and expands to consistent shapes.
+
+    Args:
+        thetas_rad: Source angles in radians; shape (K,) or (B,K).
+        snr_db: Per-source SNR in dB; scalar, (B,), or (B,K).
+        L: Number of snapshots; scalar or (B,).
+        device: Torch device on which to place the output tensors.
+
+    Returns:
+        tuple: (thetas, snr, L_t) with shapes (B,K), (B,K), and (B,) respectively.
     """
     thetas = torch.as_tensor(thetas_rad, dtype=torch.float64, device=device)
     if thetas.dim() == 1:
@@ -97,6 +111,19 @@ def calculate_sncr_crb(
       * All large Kroneckers are formed explicitly, as in the paper.
       * Inversion of (Φ Ryy Φ^H) is done via Cholesky solve.
       * dtype is hard-coded to complex128, real parts are kept where theory dictates.
+
+    Args:
+        sparse_array (torch.LongTensor): Physical sensor indices on the ULA grid (length M).
+        thetas_rad (torch.Tensor): Source angles in radians, shape (K,) or (B,K).
+        snr_db (float | torch.Tensor): Per-source SNR in dB; scalar, (B,), or (B,K).
+        L_snapshots (int | float | torch.Tensor): Number of snapshots; scalar or (B,).
+        d (float): Inter-element spacing in wavelengths (default 0.5).
+        sigma2 (float): Noise variance (default 1.0).
+        return_per_angle (bool): If True return per-angle variance; else angle-averaged RMSE.
+
+    Returns:
+        torch.Tensor: Per-angle variances of shape (B,K) in rad^2 if return_per_angle,
+            otherwise angle-averaged RMSE of shape (B,) in radians.
     """
     device = sparse_array.device if isinstance(sparse_array, torch.Tensor) else (
         "cuda" if torch.cuda.is_available() else "cpu"

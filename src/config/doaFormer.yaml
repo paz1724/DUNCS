@@ -1,0 +1,71 @@
+system_model:
+  N: 5                                    # Number of antennas/sensors in the array
+  M: 1                                    # Number of sources/targets (can be a range like [5, 10])
+  T: 8                                    # Number of snapshots/time samples
+  snr: 30                                 # Signal-to-noise ratio in dB (can be a range like [5, 15])
+  eta: 0.0                                # Array geometry uncertainty parameter (normalized misalignment)
+  bias: 0.0                               # Uniform bias in array element positions
+  sv_noise_var: 0.0                       # Steering vector noise variance
+  field_type: "Far"                       # Field type: "Far" or "Near" field
+  signal_nature: "non-coherent"           # Signal coherence: "coherent" or "non-coherent"
+  array_form: "ula"                       # Array geometry: "ula" or "mra-N"
+  antenna_pattern: true                   # Draw all samples from the RECORDED ULA3 steering manifold (Mid band)
+  doa_range: [-70, 70]                    # Direction of arrival (DOA) range in degrees [min, max]
+  min_gap: 5                              # Minimum gap between DOAs in degrees (for training data generation)
+
+
+admm_params:
+  mu: 2.5e-3
+  rho:  2
+
+
+model:
+  model_type: "DoAFormer"                 # Transformer set-prediction DoA (Proposal B)
+  model_params:
+    d_model: 64                           # Transformer embedding dimension
+    nhead: 4                              # Number of attention heads
+    num_encoder_layers: 3                 # Transformer encoder depth
+    num_decoder_layers: 2                 # Transformer decoder depth
+    dim_feedforward: 128                  # Feed-forward hidden size
+    input_mode: "both"                    # tokens = covariance rows + raw snapshots (keeps front/back phase → resolves back-lobe)
+
+
+training:
+  samples_size: 20480                     # Total number of training samples to generate
+  train_test_ratio: 0.1                   # Ratio of test to training samples (0.1 = 10% test, 90% train)
+  epochs: 160                             # Number of training epochs
+  batch_size: 256                         # Batch size for training
+  optimizer: "AdamW"                      # Optimizer
+  learning_rate: 5e-4                     # Learning rate for optimizer
+  weight_decay: 2e-5                      # L2 regularization/weight decay coefficient
+  step_size: 50                           # Step size for learning rate scheduler (epochs between steps)
+  gamma: 0.5                              # Multiplicative factor for learning rate scheduler
+  scheduler: "CustomLR"                   # Learning rate scheduler
+  training_objective: "angle"             # Training objective: "angle" or "angle, range"
+  balance_factor: 1.0
+  true_doa_train: null
+  true_range_train: null
+  true_doa_test: null
+  true_range_test: null
+
+
+evaluation:
+  criterion: [rmspe]
+  balance_factor: 1.0
+  covariance_reconstruction: "averaging"  # Covariance reconstruction method for classical baselines
+  admm_iterations: [20, 500]
+  models:
+  augmented_methods: []
+  subspace_methods: ["esprit"]
+
+
+commands:
+  create_data: true
+  save_dataset: false
+  train_model: true
+  save_model: false
+  evaluate_mode: true
+  plot_results: true
+  save_plots: true
+
+scenario:

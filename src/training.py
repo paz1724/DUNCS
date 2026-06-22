@@ -83,12 +83,17 @@ class TrainingParams(object):
 
     def set_training_objective(self, training_objective: str):
         """
+        Sets the training objective.
 
         Args:
-            training_objective:
+            training_objective (str): One of "angle", "range", "angle, range",
+                or "source_estimation" (case-insensitive).
 
         Returns:
+            self
 
+        Raises:
+            Exception: If the training objective is not recognized.
         """
         if training_objective.lower() == "angle":
             self.training_objective = "angle"
@@ -233,23 +238,27 @@ class TrainingParams(object):
         return self
 
 
-    def set_training_dataset(self, train_dataset):
+    def set_training_dataset(self, train_dataset, valid_dataset=None):
         """
         Sets the training dataset for training.
 
         Args
         ----
         - train_dataset (list): The training dataset.
+        - valid_dataset (optional): A pre-built, AoA-disjoint validation dataset.
+          When given, the internal random 90/10 split is skipped (so train and
+          validation never share an angle-of-arrival). When None, falls back to
+          the legacy random split.
 
         Returns
         -------
         self
         """
-        # Divide into training and validation datasets
-        train_size = int(0.9 * len(train_dataset))
-        valid_size = len(train_dataset) - train_size
-
-        train_dataset, valid_dataset = random_split(train_dataset, [train_size, valid_size])
+        if valid_dataset is None:
+            # Legacy: random 90/10 split (angle-agnostic — train/val may overlap in AoA)
+            train_size = int(0.9 * len(train_dataset))
+            valid_size = len(train_dataset) - train_size
+            train_dataset, valid_dataset = random_split(train_dataset, [train_size, valid_size])
 
         # init sampler
         batch_sampler_train = SameLengthBatchSampler(train_dataset, batch_size=self.batch_size)
@@ -266,6 +275,15 @@ class TrainingParams(object):
 
 class EarlyStopping:
     def __init__(self, mode="min", patience=10, min_delta=1e-4, restore_best=True):
+        """Initialize early-stopping state.
+
+        Args:
+            mode (str): "min" to stop when the metric stops decreasing, "max" when
+                it stops increasing.
+            patience (int): Number of non-improving epochs to tolerate before stopping.
+            min_delta (float): Minimum change to qualify as an improvement.
+            restore_best (bool): If True, cache the best model weights for restoration.
+        """
         assert mode in {"min","max"}
         self.mode = mode
         self.patience = patience
@@ -276,13 +294,30 @@ class EarlyStopping:
         self.best_state = None
 
     def _improved(self, value):
+        """Check whether a metric value improves on the current best by min_delta.
+
+        Args:
+            value (float): The latest metric value.
+
+        Returns:
+            bool: True if the value is an improvement over the best so far.
+        """
         if self.mode == "min":
             return (self.best - value) > self.min_delta
         else:
             return (value - self.best) > self.min_delta
 
     def step(self, value, model=None):
-        """Return True if training should stop."""
+        """Return True if training should stop.
+
+        Args:
+            value (float): The latest validation metric value.
+            model (nn.Module, optional): Model whose weights are cached when improved
+                and restore_best is enabled.
+
+        Returns:
+            bool: True if patience has been exceeded and training should stop.
+        """
         if self._improved(value):
             self.best = value
             self.bad_epochs = 0
@@ -293,6 +328,11 @@ class EarlyStopping:
         return self.bad_epochs >= self.patience
 
     def restore(self, model):
+        """Load the cached best weights into the model, if available.
+
+        Args:
+            model (nn.Module): Model to restore the best-seen weights into.
+        """
         if self.restore_best and self.best_state is not None:
             model.load_state_dict(self.best_state)
 
@@ -538,6 +578,17 @@ def plot_all_training_curves(
     suffix = f" {model_name}" if model_name else ""
 
     def _make_fig(epoch_list, curves, ylabel, title):
+        """Create a single labelled line plot from one or more curves.
+
+        Args:
+            epoch_list (list): X-axis epoch values.
+            curves (dict): Mapping of legend label -> y-values list.
+            ylabel (str): Y-axis label.
+            title (str): Figure title.
+
+        Returns:
+            matplotlib.figure.Figure: The created figure.
+        """
         fig = plt.figure(figsize=(10, 6))
         for label, data in curves.items():
             plt.plot(epoch_list, data, label=label)
@@ -704,6 +755,14 @@ def plot_comparison_curves(histories: dict, save_dir=None):
     default_colors = [("#2ca02c", "#98df8a"), ("#d62728", "#ff9896")]
 
     def _get_colors(name):
+        """Return a (train_color, valid_color) pair for a given model name.
+
+        Args:
+            name (str): Model name to look up.
+
+        Returns:
+            tuple: (train_color, valid_color) hex color strings.
+        """
         return colors.get(name, default_colors[hash(name) % len(default_colors)])
 
     # --- Figure 1: Training Loss ---

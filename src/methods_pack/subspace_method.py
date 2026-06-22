@@ -8,6 +8,13 @@ from src.system_model import SystemModel
 
 class SubspaceMethod(nn.Module):
     def __init__(self, system_model: SystemModel, model_order_estimation:str = None):
+        """Initialize the subspace method base module.
+
+        Args:
+            system_model (SystemModel): Array geometry and parameters.
+            model_order_estimation (str, optional): Source-number estimation
+                method ("threshold", "mdl", "aic", "sorte", or None).
+        """
         super(SubspaceMethod, self).__init__()
         self.system_model = system_model
         self.eigen_threshold = nn.Parameter(torch.tensor(0.18), requires_grad=True)
@@ -21,14 +28,16 @@ class SubspaceMethod(nn.Module):
                             covariance: torch.Tensor,
                             number_of_sources: torch.tensor = None) \
             -> (torch.Tensor, torch.Tensor, torch.Tensor, torch.tensor):
-        """
+        """Separate the covariance into signal and noise subspaces via eigendecomposition.
 
         Args:
-            covariance:
-            number_of_sources:
+            covariance (torch.Tensor): Covariance matrix, shape [B, N, N].
+            number_of_sources (int, optional): Number of sources; if None it
+                is estimated from the eigenvalues.
 
         Returns:
-            the signal ana noise subspaces, both as torch.Tensor().
+            tuple: (signal_subspace [B, N, M], noise_subspace [B, N, N-M],
+                source_estimation, l_eig regularization term).
         """
         covariance = diag_loading(covariance, training=self.training)  # For training stability in low SNR
         eigenvalues, eigenvectors = torch.linalg.eigh(covariance)
@@ -52,13 +61,16 @@ class SubspaceMethod(nn.Module):
         return signal_subspace.to(device), noise_subspace.to(device), source_estimation, l_eig
 
     def estimate_number_of_sources(self, eigenvalues, number_of_sources: int = None):
-        """
+        """Estimate the number of sources from the eigenvalue spectrum.
 
         Args:
-            eigenvalues:
+            eigenvalues (torch.Tensor): Eigenvalues, shape [B, N].
+            number_of_sources (int, optional): Ground-truth source count, used
+                for the training regularization term.
 
         Returns:
-
+            tuple: (source_estimation, l_eig) where l_eig is a training-time
+                regularization/loss term (None outside training or for None method).
         """
         batch_size = eigenvalues.shape[0]
         sorted_eigenvals = torch.sort(torch.real(eigenvalues), descending=True, dim=1).values
@@ -108,6 +120,15 @@ class SubspaceMethod(nn.Module):
         return source_estimation, l_eig
 
     def hypothesis_testing(self, eigenvalues, number_of_sources):
+        """Compute the model-order test statistic (MDL/AIC/SORTE) for a hypothesized source count.
+
+        Args:
+            eigenvalues (torch.Tensor): Sorted (descending) eigenvalues, shape [B, N].
+            number_of_sources (int): Hypothesized number of sources M.
+
+        Returns:
+            torch.Tensor: Test value per batch element, shape [B]; lower is better.
+        """
         moe = self.model_order_estimation.lower()
         M = number_of_sources
         if self.system_model.is_sparse_array:
@@ -143,10 +164,28 @@ class SubspaceMethod(nn.Module):
             return ratio
 
     def snr_estimation(self, eigenvalues, M):
+        """Estimate SNR (dB) as the ratio of mean signal to mean noise eigenvalues.
+
+        Args:
+            eigenvalues (torch.Tensor): Sorted (descending) eigenvalues, shape [B, N].
+            M (int): Number of sources (signal subspace dimension).
+
+        Returns:
+            torch.Tensor: Estimated SNR in dB per batch element, shape [B].
+        """
         snr = 10 * torch.log10(torch.mean(eigenvalues[:, :M], dim=1) / torch.mean(eigenvalues[:, M:], dim=1))
         return snr
 
     def get_ll(self, eigenvalues, M):
+        """Compute the log-likelihood term used in the MDL/AIC criteria.
+
+        Args:
+            eigenvalues (torch.Tensor): Sorted (descending) eigenvalues, shape [B, N].
+            M (int): Hypothesized number of sources.
+
+        Returns:
+            torch.Tensor: Log-likelihood term per batch element, shape [B].
+        """
         T = self.system_model.params.T
 
         if self.system_model.is_sparse_array:
@@ -159,40 +198,39 @@ class SubspaceMethod(nn.Module):
         return ll
 
     def get_noise_subspace(self, covariance: torch.Tensor, number_of_sources: int):
-        """
+        """Return the noise subspace of the covariance matrix.
 
         Args:
-            covariance:
-            number_of_sources:
+            covariance (torch.Tensor): Covariance matrix, shape [B, N, N].
+            number_of_sources (int): Number of sources M.
 
         Returns:
-
+            torch.Tensor: Noise subspace, shape [B, N, N-M].
         """
         _, noise_subspace, _, _ = self.subspace_separation(covariance, number_of_sources)
         return noise_subspace
 
     def get_signal_subspace(self, covariance: torch.Tensor, number_of_sources: int):
-        """
+        """Return the signal subspace of the covariance matrix.
 
         Args:
-            covariance:
-            number_of_sources:
+            covariance (torch.Tensor): Covariance matrix, shape [B, N, N].
+            number_of_sources (int): Number of sources M.
 
         Returns:
-
+            torch.Tensor: Signal subspace, shape [B, N, M].
         """
         signal_subspace, _, _, _ = self.subspace_separation(covariance, number_of_sources)
         return signal_subspace
 
     def eigen_regularization(self, number_of_sources: int):
-        """
+        """Regularization term encouraging the eigen-threshold to separate signal/noise eigenvalues.
 
         Args:
-            normalized_eigenvalues:
-            number_of_sources:
+            number_of_sources (int): Ground-truth number of sources M.
 
         Returns:
-
+            torch.Tensor: Per-batch regularization term, shape [B].
         """
         l_eig = (self.normalized_eigenvals[:, number_of_sources - 1] - self.__get_eigen_threshold()) * \
                 (self.normalized_eigenvals[:, number_of_sources] - self.__get_eigen_threshold())
@@ -200,6 +238,11 @@ class SubspaceMethod(nn.Module):
         return l_eig
 
     def __get_eigen_threshold(self):
+        """Return the learnable eigenvalue threshold parameter.
+
+        Returns:
+            torch.Tensor: Scalar eigen-threshold parameter.
+        """
         return self.eigen_threshold
 
     @staticmethod
@@ -255,6 +298,7 @@ class SubspaceMethod(nn.Module):
         return R_smoothed
 
     def save_eigen_values(self):
+        """Accumulate normalized eigenvalues per source count for later averaging/plotting."""
         n_sources = self._num_sources.item()
         self.avg_len[n_sources] = self.avg_len.get(n_sources, 0) + 1
         self.eigen_values_avg[n_sources] = self.eigen_values_avg.get(n_sources, torch.zeros_like(self.normalized_eigenvals)) + self.normalized_eigenvals

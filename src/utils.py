@@ -297,6 +297,17 @@ def gram_diagonal_overload(Kx: torch.Tensor, eps: float, batch_size: int):
 
 
 def calculate_covariance_tensor(sampels: torch.Tensor, method: str = "simple"):
+    """Computes the (empirical) spatial covariance matrix for a batch of signal samples.
+
+    Args:
+        sampels (torch.Tensor): Complex signal samples, shape [N, T] (single) or
+            [BS, N, T] (batched), where N is sensors and T is snapshots.
+        method (str): Covariance estimator. "simple"/"sample" for the sample
+            covariance, "sps" for spatial-smoothing covariance.
+
+    Returns:
+        torch.Tensor: Covariance tensor, shape [BS, N, N] (or [1, N, N] for "sps").
+    """
     if method in ["simple", "sample"]:
         if sampels.dim() == 2:
             Rx = torch.cov(sampels)[None, :, :]
@@ -345,6 +356,16 @@ def _spatial_smoothing_covariance(sampels: torch.Tensor):
 
 
 def parse_loss_results_for_plotting(loss_results: dict):
+    """Restructures nested loss results into a per-method dict for plotting.
+
+    Args:
+        loss_results (dict): Nested results keyed test -> method -> {"Overall", "Accuracy"}.
+
+    Returns:
+        tuple: (plt_res, plt_acc) where plt_res maps method ->
+            {"Overall": list, optionally "Accuracy": list}, and plt_acc (bool)
+            indicates whether any accuracy values were present.
+    """
     plt_res = {}
     plt_acc = False
     for test, results in loss_results.items():
@@ -365,6 +386,10 @@ def print_loss_results_from_simulation(loss_results: dict):
     Print the loss results from the simulation.
     Compatible with the nested loss_dict format:
     scenario -> value -> method -> test -> res_type -> metric_value
+
+    Args:
+        loss_results (dict): Nested results keyed
+            scenario -> value -> method -> test -> {metric_name: metric_value}.
     """
     for scenario_key, values_dict in loss_results.items():
         print("#" * 10 + f" {scenario_key.upper()} TEST RESULTS " + "#" * 10)
@@ -394,6 +419,15 @@ Number = Union[int, float]
 
 
 def resolve_param(value: Union[Number, Tuple[Number, Number]]) -> Number:
+    """Resolves a parameter that may be a fixed value or a (low, high) range.
+
+    Args:
+        value (Number | tuple[Number, Number]): A scalar, or a (low, high) pair
+            from which a random value is drawn (randint if both ints, else uniform).
+
+    Returns:
+        Number: The scalar itself, or a random sample from the given range.
+    """
     if isinstance(value, (tuple, list)):
         low, high = value
         if isinstance(low, int) and isinstance(high, int):
@@ -404,6 +438,14 @@ def resolve_param(value: Union[Number, Tuple[Number, Number]]) -> Number:
 
 
 def validate_constant_sources_number(sources_num):
+    """Asserts that every sample in a batch has the same number of sources.
+
+    Args:
+        sources_num (array-like): Per-sample source counts, shape [BS].
+
+    Raises:
+        Exception: If the source count is not identical across the batch.
+    """
     if (sources_num != sources_num[0]).any():
         # in this case, the sources number is not the same for all samples in the batch
         raise Exception(f"train_model:"
@@ -422,6 +464,12 @@ class SpectralNormalization(nn.Module):
     """
 
     def __init__(self, eps: float = 1e-12):
+        """Initializes the spectral-normalization module.
+
+        Args:
+            eps (float): Positive constant added to the denominator to avoid
+                division by zero; registered as a buffer. Defaults to 1e-12.
+        """
         super().__init__()
         # saved+loaded, moved with .to(), no grad, not in parameters()
         self.register_buffer("eps", torch.tensor(float(eps)))
@@ -454,6 +502,18 @@ class SpectralNormalization(nn.Module):
 
 # ─────────────────── helper: build Φ (|S|×|U|) ──────────────────
 def build_phi(array) -> Tensor:
+    """Builds the binary selection matrix Phi mapping a virtual ULA onto sparse array positions.
+
+    Each row corresponds to a physical sensor position in `array` and has a single
+    1 in the column of the matching virtual-ULA index (positions 0..max(array)).
+
+    Args:
+        array (array-like): Integer sensor positions of the sparse array, length |S|.
+
+    Returns:
+        Tensor: Selection matrix Phi, shape [|S|, |U|] where |U| = max(array)+1,
+            with 1.0 entries marking occupied positions.
+    """
     max_element = array.max()
     s = torch.as_tensor(array, dtype=torch.int64, device=device)
     v = torch.arange(max_element + 1, dtype=torch.int64, device=device)   # The presumed ULA
@@ -466,10 +526,27 @@ def build_phi(array) -> Tensor:
 # ───────────── projections & prox  ─────────────
 
 def hermitian_proj(X: Tensor) -> Tensor:
+    """Projects a matrix onto the Hermitian set via 0.5*(X + X^H).
+
+    Args:
+        X (Tensor): Complex matrix, shape [..., N, N].
+
+    Returns:
+        Tensor: Hermitian matrix 0.5*(X + X^H), same shape as X.
+    """
     return 0.5 * (X + X.conj().transpose(-2, -1))
 
 
 def toeplitz_proj(H: Tensor) -> Tensor:
+    """Projects each matrix onto the Toeplitz set by averaging along every diagonal.
+
+    Args:
+        H (Tensor): Batched square matrices, shape [B, L, L].
+
+    Returns:
+        Tensor: Toeplitz matrices, shape [B, L, L], where each diagonal is
+            replaced by its mean value.
+    """
     B, L, _ = H.shape
     T = H.clone()
     for d in range(-L + 1, L):
@@ -480,6 +557,16 @@ def toeplitz_proj(H: Tensor) -> Tensor:
 
 
 def psd_proj(T: Tensor) -> Tensor:
+    """Projects a Hermitian matrix onto the PSD cone by clipping negative eigenvalues to zero.
+
+    Eigenvectors are phase-normalized (first entry made real) before reconstruction.
+
+    Args:
+        T (Tensor): Batched Hermitian matrices, shape [B, N, N].
+
+    Returns:
+        Tensor: Nearest PSD matrices (in Frobenius norm), shape [B, N, N].
+    """
     lam, U = torch.linalg.eigh(T)
     phase = U[..., 0, :].angle()
     U = U * torch.exp(-1j * phase)[..., None, :]
@@ -488,11 +575,35 @@ def psd_proj(T: Tensor) -> Tensor:
 
 
 def svt(Z: Tensor, tau) -> Tensor:
+    """Applies the Singular Value Thresholding (SVT) proximal operator for the nuclear norm.
+
+    Computes the SVD and soft-thresholds the singular values by `tau`
+    (clamped at zero), i.e. prox of tau*||.||_nuclear.
+
+    Args:
+        Z (Tensor): Batched matrices, shape [B, M, N].
+        tau (float | Tensor): Soft-threshold applied to singular values.
+
+    Returns:
+        Tensor: Thresholded (low-rank-shrunk) matrices, shape [B, M, N].
+    """
     U, s, Vh = torch.linalg.svd(Z)
     s_shrink = torch.clamp(s - tau, min=0.0)
     return (U * s_shrink.unsqueeze(-2)) @ Vh
 
 def diag_loading(mat: Tensor, training=False) -> Tensor:
+    """Hermitian-symmetrizes a matrix and applies diagonal loading for numerical stability.
+
+    Adds eps*I to the diagonal, plus a tiny Hermitian random dither during training.
+
+    Args:
+        mat (Tensor): Batched matrices, shape [B, N, N].
+        training (bool): If True, adds a small Hermitian random perturbation.
+            Defaults to False.
+
+    Returns:
+        Tensor: Loaded Hermitian matrices, shape [B, N, N].
+    """
     mat = hermitian_proj(mat)
     B, N, _ = mat.shape
     I = torch.eye(N, device=mat.device, dtype=mat.dtype).expand(B, N, N)

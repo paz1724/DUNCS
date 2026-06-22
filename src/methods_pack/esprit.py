@@ -10,9 +10,24 @@ from src.system_model import SystemModel
 
 class ESPRIT(SubspaceMethod):
     def __init__(self, system_model: SystemModel, model_order_estimation:str = 'sorte'):
+        """Initialize the ESPRIT subspace estimator.
+
+        Args:
+            system_model (SystemModel): Array geometry and parameters.
+            model_order_estimation (str): Source-number estimation method (default 'sorte').
+        """
         super().__init__(system_model, model_order_estimation)
 
     def forward(self, cov: torch.Tensor, number_of_sources: torch.tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """Estimate DoAs from a covariance matrix using ESPRIT.
+
+        Args:
+            cov (torch.Tensor): Covariance matrix, shape [B, N, N].
+            number_of_sources (int): Number of sources M (may be None to estimate).
+
+        Returns:
+            tuple: (prediction angles [B, M], sources_estimation, regularization term).
+        """
         # get the signal subspace
         signal_subspace, _, sources_estimation, regularization = self.subspace_separation(
             cov,
@@ -29,6 +44,11 @@ class ESPRIT(SubspaceMethod):
         return prediction, sources_estimation, regularization
 
     def __str__(self):
+        """Return the method name string.
+
+        Returns:
+            str: "esprit".
+        """
         return "esprit"
 
 

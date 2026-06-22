@@ -22,7 +22,7 @@ model:
   model_type: "SparseNet"                 # Model type to use: "DUNCS", "SparseNet", "SubspaceNet", etc.
   model_params:
     tau: 8                                # Maximum lag/autocorrelation delay for sparse covariance matrix
-    diff_method: "esprit"                 # Difference method for sparse array processing: "esprit", "music", etc.
+    diff_method: "esprit"                 # Subspace readout. ESPRIT best for the learned model — the CNN absorbs the (field) manifold (0.2° vs music_1D 8.6°, Task 7). "music_1D" searches the recorded manifold (needed for classical baselines).
 
 
 training:

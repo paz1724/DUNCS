@@ -48,9 +48,10 @@ def evaluate_dnn_model(model: nn.Module, dataset: DataLoader, mode: str = "test"
     Args:
         model (nn.Module): The trained model to evaluate.
         dataset (DataLoader): The evaluation dataset.
+        mode (str): Evaluation mode, "valid" or "test"; selects the model step used.
 
     Returns:
-        float: The overall evaluation loss.
+        dict: Normalized result with 'loss' (float) and 'Accuracy' (float or None).
 
     Raises:
         Exception: If the evaluation loss is not implemented for the model type.
@@ -247,6 +248,16 @@ def evaluate_model_based(
 def evaluate_admm_convergence(dataset: DataLoader,
                               criterion: nn.Module,
                               cov_recon: CovReconstructor):
+    """Evaluate covariance-reconstruction convergence against the sample covariance.
+
+    Args:
+        dataset (DataLoader): The evaluation dataset.
+        criterion (nn.Module): Criterion comparing reconstructed and sample covariance.
+        cov_recon (CovReconstructor): Covariance reconstruction method.
+
+    Returns:
+        dict: Normalized result holding the average loss.
+    """
     # Initialize parameters for evaluation
     overall_loss = 0.0
     test_length = 0
@@ -299,6 +310,16 @@ def add_random_predictions(M: int, predictions: np.ndarray, algorithm: str):
 
 def evaluate_crb(dataset: DataLoader,
                  system_model: SystemModel):
+    """Compute the average SNCR Cramer-Rao bound over a dataset for sparse far-field.
+
+    Args:
+        dataset (DataLoader): The evaluation dataset.
+        system_model (SystemModel): System model providing array geometry and params.
+
+    Returns:
+        dict or None: Normalized result with the average CRB, or None if the
+            scenario (non-sparse or non-far-field) is unsupported.
+    """
     params = system_model.params
     if system_model.is_sparse_array and params.field_type.lower() == "far":
         crb_sum_1 = 0.0
@@ -343,6 +364,27 @@ def evaluate(
         cov_recon_method='sample',
         cov_recon_params: dict = None,
         admm_iterations: list = None):
+    """Evaluate DNN models, augmented models, and classical subspace baselines.
+
+    Dispatches to ADMM-specific evaluation when cov_recon_method is 'admm';
+    otherwise evaluates the provided model, any configured DNN models, and the
+    listed classical subspace methods for each criterion.
+
+    Args:
+        generic_test_dataset (DataLoader): The evaluation dataset.
+        criterions (List[nn.Module]): Loss criteria to evaluate against.
+        system_model (SystemModel): Array geometry / steering model.
+        models (dict, optional): Mapping of model name -> params to instantiate and evaluate.
+        augmented_methods (list, optional): Augmented (hybrid) methods to evaluate.
+        subspace_methods (list, optional): Classical subspace algorithm names.
+        model_tmp (nn.Module, optional): A pre-trained model instance to evaluate.
+        cov_recon_method (str): Covariance reconstruction method ('sample', 'admm', ...).
+        cov_recon_params (dict, optional): Parameters for the reconstruction method.
+        admm_iterations (list, optional): ADMM iteration counts to sweep over.
+
+    Returns:
+        dict: Nested results keyed by criterion class name and method name.
+    """
     if cov_recon_method == 'admm':
         results = admm_evaluation(generic_test_dataset, criterions, system_model, model_tmp, subspace_methods,
                                   cov_recon_method, cov_recon_params, admm_iterations, models=models)
@@ -410,6 +452,26 @@ def admm_evaluation(generic_test_dataset: DataLoader,
                     cov_recon_params: dict = None,
                     admm_iterations: list = None,
                     models:dict = None):
+    """Evaluate models and classical methods while sweeping ADMM iteration counts.
+
+    For each criterion and each requested ADMM iteration count, evaluates the
+    eligible DNN models (configuring iterations and subspace method) and the
+    classical subspace baselines using an ADMM covariance reconstruction.
+
+    Args:
+        generic_test_dataset (DataLoader): The evaluation dataset.
+        criterions (List[nn.Module]): Loss criteria to evaluate against.
+        system_model (SystemModel): Array geometry / steering model.
+        model (nn.Module, optional): A pre-trained model instance to evaluate.
+        subspace_methods (list, optional): Classical subspace algorithm names.
+        cov_recon_method (str): Covariance reconstruction method (default 'admm').
+        cov_recon_params (dict, optional): Parameters for the reconstruction method.
+        admm_iterations (list, optional): ADMM iteration counts to sweep over.
+        models (dict, optional): Mapping of model name -> params to instantiate.
+
+    Returns:
+        dict: Nested results keyed by criterion class name and method/iteration name.
+    """
     results = {}
     eval_models = [model] if model is not None else []
     if models:

@@ -4,11 +4,25 @@ from src.system_model import SystemModel
 from src.utils import *
 from src.methods_pack.music import MUSIC
 from src.methods_pack.esprit import ESPRIT
-from src.metrics.criterions import set_criterions, RMSPELoss
+from src.metrics.criterions import set_criterions, RMSPELoss, EigenRegularizationLoss
 
 
 class DUNCS(ParentModel):
-    def __init__(self, system_model: SystemModel, criterion, num_iterations: int, subspace_method: str, mu=1, rho=1):
+    """Deep-unfolded ADMM network for sparse covariance recovery, followed by a subspace DoA method."""
+
+    def __init__(self, system_model: SystemModel, criterion, num_iterations: int, subspace_method: str, mu=1, rho=1, eigen_regularization_weight=0):
+        """Initializes the DUNCS model and its learned ADMM parameters.
+
+        Args:
+            system_model (SystemModel): Array geometry and signal parameters.
+            criterion (str): Name of the training criterion (e.g. "rmspe").
+            num_iterations (int): Number of unrolled ADMM iterations.
+            subspace_method (str): Subspace method for DoA ("music", "esprit", ...).
+            mu (float): ADMM penalty parameter initializer. Defaults to 1.
+            rho (float): ADMM step-size parameter initializer. Defaults to 1.
+            eigen_regularization_weight (float): Weight for source-count (SORTE)
+                regularization. Defaults to 0.
+        """
         super().__init__(system_model, criterion)
 
         self.num_iter = num_iterations
@@ -19,6 +33,8 @@ class DUNCS(ParentModel):
         self.phi_H = self.phi.t()
 
         self.criterion = set_criterions(criterion, self.system_model.array)[0]
+        # Weighted source-count (model-order) regularization — trains the SORTE counter.
+        self._eigen_regularization = EigenRegularizationLoss(eigen_regularization_weight)
 
         self.test_criterion = self.criterion
         self.test_iterations = self.num_iter
@@ -38,6 +54,15 @@ class DUNCS(ParentModel):
         self.mu_v = nn.Parameter(torch.ones(self.num_iter, ))
 
     def get_learned_covariance(self, x: torch.Tensor, phase="train") -> torch.Tensor:
+        """Runs the unrolled ADMM iterations to recover a Toeplitz/PSD covariance.
+
+        Args:
+            x (torch.Tensor): Input snapshots, shape [B, |S|, T].
+            phase (str): "train" or "test"; selects the number of ADMM iterations.
+
+        Returns:
+            torch.Tensor: Recovered virtual-array covariance T, shape [B, |U|, |U|].
+        """
         Rx = sample_covariance(x)
         B, _, _ = Rx.shape
         U = self.U
@@ -92,45 +117,113 @@ class DUNCS(ParentModel):
         return T
 
     def forward(self, x: torch.Tensor, num_sources: int, phase='train'):
+        """Recovers the covariance and runs the subspace method to estimate DoAs.
+
+        Args:
+            x (torch.Tensor): Input snapshots, shape [B, |S|, T].
+            num_sources (int): Number of sources to estimate.
+            phase (str): "train" or "test"; selects subspace method and iteration count.
+
+        Returns:
+            tuple: (doa_prediction, sources_estimation, eigen_regularization) from the
+                subspace method.
+        """
         R = self.get_learned_covariance(x, phase)
         if phase == "train":
-            doa_prediction, _, _ = self.subspace_method(R, num_sources)
+            doa_prediction, sources_estimation, eigen_regularization = self.subspace_method(R, num_sources)
         elif phase == "test":
-            doa_prediction, _, _ = self.test_subspace_method(R, num_sources)
+            doa_prediction, sources_estimation, eigen_regularization = self.test_subspace_method(R, num_sources)
         else:
             raise NotImplementedError(f"Unknown phase {phase}")
 
-        return doa_prediction
+        return doa_prediction, sources_estimation, eigen_regularization
 
     def training_step(self, batch):
+        """Runs one training step using either RMSPE (DoA) or an ADMM-objective loss.
+
+        Args:
+            batch: A tuple of (x, sources_num, angles).
+
+        Returns:
+            tuple or torch.Tensor: For RMSPE, (loss, acc, eigen_regularization);
+                otherwise the covariance-reconstruction loss tensor.
+        """
         x, sources_num, angles = self._prepare_batch(batch)
         if isinstance(self.criterion, RMSPELoss):
-            doa_prediction = self(x, sources_num)
+            doa_prediction, sources_estimation, eigen_regularization = self(x, sources_num)
             loss = self.criterion(doa_prediction, angles)
+            acc = self._source_estimation_accuracy(sources_num, sources_estimation)
+            loss = self._eigen_regularization.get_regularized_loss(loss, eigen_regularization)
+            return loss, acc, eigen_regularization
         else:
             Rx = sample_covariance(x)
             R = self.get_learned_covariance(x)
             mu = torch.mean(self.tau[-1]) * torch.mean(self.rho_m[-1])
             loss = self.criterion(R, Rx, mu)
-
-        return loss
+            return loss
 
     @torch.no_grad()
     def validation_step(self, batch):
-        return self.training_step(batch)
+        """Runs one validation step using either RMSPE (DoA) or an ADMM-objective loss.
+
+        Args:
+            batch: A tuple of (x, sources_num, angles).
+
+        Returns:
+            tuple or torch.Tensor: For RMSPE, (loss, acc); otherwise the
+                covariance-reconstruction loss tensor.
+        """
+        x, sources_num, angles = self._prepare_batch(batch)
+        if isinstance(self.criterion, RMSPELoss):
+            doa_prediction, sources_estimation, _ = self(x, sources_num)
+            loss = self.criterion(doa_prediction, angles)
+            acc = self._source_estimation_accuracy(sources_num, sources_estimation)
+            return loss, acc
+        else:
+            Rx = sample_covariance(x)
+            R = self.get_learned_covariance(x)
+            mu = torch.mean(self.tau[-1]) * torch.mean(self.rho_m[-1])
+            loss = self.criterion(R, Rx, mu)
+            return loss
 
     @torch.no_grad()
     def test_step(self, batch):
+        """Runs one test step using the test criterion and test iteration count.
+
+        Args:
+            batch: A tuple of (x, sources_num, angles).
+
+        Returns:
+            tuple or torch.Tensor: For RMSPE, (loss, acc); otherwise the
+                covariance-reconstruction loss tensor.
+        """
         x, sources_num, angles = self._prepare_batch(batch)
         if isinstance(self.test_criterion, RMSPELoss):
-            doa_prediction = self(x, sources_num, phase='test')
+            doa_prediction, sources_estimation, _ = self(x, sources_num, phase='test')
             loss = self.test_criterion(doa_prediction, angles)
+            acc = self._source_estimation_accuracy(sources_num, sources_estimation)
+            return loss, acc
         else:
             Rx = sample_covariance(x)
             R = self.get_learned_covariance(x, phase='test')
             mu = torch.mean(self.tau[-1]) * torch.mean(self.rho_r[-1]).item()
             loss = self.test_criterion(R, Rx, mu)
-        return loss
+            return loss
+
+    @staticmethod
+    def _source_estimation_accuracy(sources_num, source_estimation):
+        """Counts how many estimated source counts match the true source count.
+
+        Args:
+            sources_num (int): True number of sources.
+            source_estimation (torch.Tensor or None): Estimated source counts per sample.
+
+        Returns:
+            int: Number of correct source-count estimates, or 0 if estimation is None.
+        """
+        if source_estimation is None:
+            return 0
+        return torch.sum(source_estimation == sources_num * torch.ones_like(source_estimation).float()).item()
 
     @staticmethod
     def get_model_based_method(method_name: str, system_model: SystemModel):
@@ -152,6 +245,12 @@ class DUNCS(ParentModel):
             return ESPRIT(system_model)
 
     def set_test_criteria(self, test_criterion):
+        """Sets the criterion used at test time.
+
+        Args:
+            test_criterion (nn.Module or str): A loss module, or a criterion name to
+                resolve via set_criterions.
+        """
         if isinstance(test_criterion, nn.Module):
             self.test_criterion = test_criterion
         else:
@@ -159,11 +258,27 @@ class DUNCS(ParentModel):
                 set_criterions(test_criterion, self.system_model.array)[0]
 
     def set_num_test_iterations(self, num_iter: int) -> None:
+        """Sets the number of ADMM iterations used at test time.
+
+        Args:
+            num_iter (int): Desired test iteration count; applied only if it does not
+                exceed the maximum trained iterations.
+        """
         if num_iter <= self.get_max_iterations():
             self.test_iterations = num_iter
 
     def get_max_iterations(self):
+        """Returns the maximum number of unrolled ADMM iterations (from learned params).
+
+        Returns:
+            int: The number of trained ADMM iterations.
+        """
         return self.rho_m.shape[0]
 
     def set_test_subspace_method(self, subspace_method):
+        """Sets the subspace method used at test time.
+
+        Args:
+            subspace_method (str): Name of the subspace method (e.g. "music", "esprit").
+        """
         self.test_subspace_method = self.get_model_based_method(subspace_method, self.system_model)

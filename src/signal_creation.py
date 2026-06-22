@@ -50,7 +50,7 @@ class Samples(SystemModel):
         super().__init__(system_model_params)
         self.distances = None
 
-    def set_doa(self, doa, M):
+    def set_doa(self, doa, M, angle_pool=None):
         """
         Sets the direction of arrival (DOA) for the signals.
 
@@ -96,7 +96,18 @@ class Samples(SystemModel):
 
             return DOA
 
-        if doa == None:
+        if angle_pool is not None:
+            # Draw M distinct angles (degrees) from a discrete pool. Enables
+            # AoA-disjoint train/val/test splits drawn from the recorded grid:
+            # each split is given its own pool, so no AoA is shared across splits.
+            pool = np.asarray(angle_pool, dtype=float)
+            chosen = np.sort(np.random.choice(pool, size=M, replace=False))
+            for _ in range(100):  # best-effort min_gap separation for M > 1
+                if M == 1 or np.all(np.diff(chosen) >= self.params.min_gap):
+                    break
+                chosen = np.sort(np.random.choice(pool, size=M, replace=False))
+            self.doa = chosen * D2R
+        elif doa is None:
             # Generate angels with gap greater than 0.2 rad (nominal case)
             self.doa = np.array(create_doa_with_gap(M=M)) * D2R
         else:
@@ -104,18 +115,37 @@ class Samples(SystemModel):
             self.doa = np.array(doa) * D2R
 
     def set_range(self, distance: list | np.ndarray, M) -> np.ndarray:
-        """
+        """Sets the source ranges (distances) for near-field signals.
+
+        If no distances are provided, samples M random distances within the array's
+        Fresnel/Fraunhofer region; otherwise uses the supplied values.
 
         Args:
-            distance:
+        -----
+            distance (list | np.ndarray | None): Predefined source distances, or None to sample randomly.
+            M (int): Number of sources.
 
         Returns:
-
+        --------
+            None: Sets self.distances in place.
         """
 
         def choose_distances(M, distance_min_gap: float = 0.5, distance_max_gap: int = 10,
                              min_val: float = 2, max_val: int = 7) -> np.ndarray:
+            """Samples M random source distances within [min_val, max_val], rounded to integers.
 
+            Args:
+            -----
+                M (int): Number of distances to generate.
+                distance_min_gap (float, optional): Minimum gap between distances (unused). Defaults to 0.5.
+                distance_max_gap (int, optional): Maximum gap between distances (unused). Defaults to 10.
+                min_val (float, optional): Lower bound for sampled distances. Defaults to 2.
+                max_val (int, optional): Upper bound for sampled distances. Defaults to 7.
+
+            Returns:
+            --------
+                np.ndarray: Array of M sampled distances.
+            """
             distances = np.round(np.random.uniform(min_val, max_val, M), decimals=0)  # TODO
             if np.unique(distances).shape[0] != M:
                 distances = np.round(np.random.uniform(min_val, max_val, M), decimals=0)

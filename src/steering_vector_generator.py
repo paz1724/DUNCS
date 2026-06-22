@@ -6,12 +6,29 @@ class SteeringVectorGenerator:
     _instance = None  # shared across all calls
 
     def __new__(cls, array, dist_array_elems, params):
+        """Returns the singleton instance, initializing it on first construction.
+
+        Args:
+            array (np.ndarray): Sensor position indices, shape [N].
+            dist_array_elems (dict): Inter-element spacing keyed by signal type.
+            params (SystemModelParams): System model parameters (N, eta, bias, field_type, ...).
+
+        Returns:
+            SteeringVectorGenerator: The shared singleton instance.
+        """
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._init_instance(array, dist_array_elems, params)
         return cls._instance
 
     def _init_instance(self, array, dist_array_elems, params):
+        """Initializes singleton state, drawing random per-array bias and mislocation noise.
+
+        Args:
+            array (np.ndarray): Sensor position indices, shape [N].
+            dist_array_elems (dict): Inter-element spacing keyed by signal type.
+            params (SystemModelParams): System model parameters (N, eta, bias, signal_type, ...).
+        """
         self.array = array
         self.params = params
         self.dist_array_elems = dist_array_elems
@@ -23,7 +40,23 @@ class SteeringVectorGenerator:
 
     def generate(self, theta, *, distance=None, f=1, nominal=False,
                  pattern_data=None, generate_search_grid=False):
-        """Smart dispatch based on params.field_type and use of antenna pattern."""
+        """Smart dispatch based on params.field_type and use of antenna pattern.
+
+        Args:
+            theta (np.ndarray): DoA angle(s) in radians.
+            distance (np.ndarray, optional): Source range(s) for near-field. Defaults to None.
+            f (float): Frequency value/index for broadband. Defaults to 1.
+            nominal (bool): If True, generate noiseless steering vectors. Defaults to False.
+            pattern_data (dict | tuple, optional): Antenna pattern data; if given, routes
+                to the antenna-pattern generator. Defaults to None.
+            generate_search_grid (bool): If True, build a full angle/distance grid. Defaults to False.
+
+        Returns:
+            np.ndarray: Complex steering vector(s) produced by the selected generator.
+
+        Raises:
+            ValueError: If params.field_type is neither "far" nor "near".
+        """
         field_type = self.params.field_type.lower()
 
         if pattern_data is not None:
@@ -40,20 +73,55 @@ class SteeringVectorGenerator:
             raise ValueError(f"Unknown field type: {self.params.field_type}")
 
     def _generate_far_field(self, theta, f=1):
+        """Computes the far-field plane-wave steering vector with bias/mislocation/noise effects.
+
+        Args:
+            theta (float | np.ndarray): DoA angle(s) in radians.
+            f (float): Frequency scaling for broadband signals. Defaults to 1.
+
+        Returns:
+            np.ndarray: Complex steering vector, shape [N] (or broadcast over theta).
+        """
         f_sv = {"NarrowBand": 1, "Broadband": f}
         mis_geometry_noise = np.sqrt(self.params.sv_noise_var) * np.random.randn(self.params.N) if self.params.sv_noise_var else 0
         dist = self.dist_array_elems[self.params.signal_type]
-        return (
-            np.exp(
-                -2j * np.pi * f_sv[self.params.signal_type]
-                * (self._uniform_bias + self._mis_distance + dist)
-                * self.array * np.sin(theta)
+        theta_arr = np.atleast_1d(theta)
+        if theta_arr.size == 1:
+            # Single angle — preserve the original [N] shape exactly.
+            return (
+                np.exp(
+                    -2j * np.pi * f_sv[self.params.signal_type]
+                    * (self._uniform_bias + self._mis_distance + dist)
+                    * self.array * np.sin(theta)
+                )
+                + mis_geometry_noise
             )
-            + mis_geometry_noise
-        )
+        # Vector of angles (M sources or a grid dictionary) -> [N, Ntheta] via outer product.
+        coeff = (self._uniform_bias + self._mis_distance + dist) * self.array  # [N]
+        sv = np.exp(-2j * np.pi * f_sv[self.params.signal_type]
+                    * coeff[:, None] * np.sin(theta_arr)[None, :])              # [N, Ntheta]
+        if np.ndim(mis_geometry_noise):
+            sv = sv + mis_geometry_noise[:, None]
+        else:
+            sv = sv + mis_geometry_noise
+        return sv
 
     def _generate_near_field(self, theta: np.ndarray, distance: np.ndarray, f: float = 1,
                              nominal=False, generate_search_grid: bool = False):
+        """Computes near-field steering vectors using the second-order (Fresnel) phase model.
+
+        Args:
+            theta (np.ndarray): DoA angle(s) in radians, length Ntheta.
+            distance (np.ndarray): Source range(s), length Ndist.
+            f (float): Frequency scaling for broadband signals. Defaults to 1.
+            nominal (bool): If True, omit steering-vector noise. Defaults to False.
+            generate_search_grid (bool): If True, return the full [N, Ntheta, Ndist]
+                grid; otherwise return the per-source diagonal. Defaults to False.
+
+        Returns:
+            np.ndarray: Complex steering vectors, shape [N, Ntheta, Ndist] when
+                generate_search_grid is True, else [N, Ntheta].
+        """
         f_sv = {"NarrowBand": 1, "Broadband": f}
 
         theta = np.atleast_1d(theta)[:, np.newaxis]
@@ -110,6 +178,10 @@ class SteeringVectorGenerator:
             antenna_pattern_data: Dictionary or tuple containing pattern data
             f: Frequency index/value (default=1, used for broadband signals)
             signal_type: Signal type ("NarrowBand" or "Broadband")
+
+        Returns:
+            np.ndarray: Complex steering vector(s), shape [Nelements] for a single
+                angle or [Nelements, Ntheta] for multiple angles.
         """
         theta_deg = np.rad2deg(theta)
         theta_deg = np.atleast_1d(theta_deg)
@@ -127,7 +199,21 @@ class SteeringVectorGenerator:
     
     @staticmethod
     def _generate_antenna_pattern_dict(theta_deg, pattern_dict, f=1, signal_type="NarrowBand"):
-        """Generate steering vector from dictionary format (frequency-dependent)."""
+        """Generate steering vector from dictionary format (frequency-dependent).
+
+        Selects a frequency slice then linearly interpolates the complex pattern in azimuth.
+
+        Args:
+            theta_deg (np.ndarray): DoA angle(s) in degrees, length Ntheta.
+            pattern_dict (dict): Pattern data with 'freq', 'phi', and 'A'
+                [Nelements, Nazimuth, Nfreqs].
+            f (float): Frequency index (mapped to a slice of A). Defaults to 1.
+            signal_type (str): "NarrowBand" or "Broadband". Defaults to "NarrowBand".
+
+        Returns:
+            np.ndarray: Complex steering vector, shape [Nelements] for a single angle
+                or [Nelements, Ntheta] otherwise.
+        """
         freq = pattern_dict['freq']
         phi = pattern_dict['phi']
         A = pattern_dict['A']  # [Nelements, Nazimuth, Nfreqs]
@@ -172,7 +258,18 @@ class SteeringVectorGenerator:
     
     @staticmethod
     def _generate_antenna_pattern_tuple(theta_deg, antenna_pattern_data):
-        """Generate steering vector from tuple format (legacy, angle-dependent only)."""
+        """Generate steering vector from tuple format (legacy, angle-dependent only).
+
+        Interpolates phase (deg) and amplitude (dB) over azimuth, then forms amps*exp(j*phase).
+
+        Args:
+            theta_deg (np.ndarray): DoA angle(s) in degrees, length Ntheta.
+            antenna_pattern_data (tuple): (azimuth_base_array, phase_array, amps_array).
+
+        Returns:
+            np.ndarray: Complex steering vector, shape [Nelements] for a single angle
+                or [Ntheta, Nelements] for multiple angles.
+        """
         azimuth_base_array, phase_array, amps_array = antenna_pattern_data
 
         interp_phase = interpolate.interp1d(azimuth_base_array, phase_array, axis=0,
@@ -191,4 +288,8 @@ class SteeringVectorGenerator:
 
     @classmethod
     def reset_instance(cls):
+        """Clears the cached singleton so the next construction reinitializes it.
+
+        Call between simulations that use different system-model configurations.
+        """
         cls._instance = None

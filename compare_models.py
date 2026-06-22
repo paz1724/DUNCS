@@ -1,5 +1,5 @@
 """
-Compare DUNCS vs SparseNet: train both models on the same dataset,
+Compare DUNCS vs SubspaceNet: train both models on the same dataset,
 produce comparison plots of training/validation loss and accuracy,
 and evaluate both on the same test set.
 
@@ -58,11 +58,11 @@ def main():
 
     # ---- 1. Load both configs ----
     duncs_config = load_simulation_config("src/config/DUNCS.yaml")
-    sparse_config = load_simulation_config("src/config/sparseNet.yaml")
+    subspace_config = load_simulation_config("src/config/subspaceNet.yaml")
 
     # ---- 2. Shared dataset (same system model, max sample size) ----
     samples_size = max(duncs_config.training.samples_size,
-                       sparse_config.training.samples_size)
+                       subspace_config.training.samples_size)
     test_size = int(duncs_config.training.train_test_ratio * samples_size)
 
     print(f"=== Creating shared dataset: {samples_size} train, {test_size} test ===")
@@ -112,28 +112,28 @@ def main():
     # Reset steering vector cache between models
     SteeringVectorGenerator.reset_instance()
 
-    # ---- 4. Train SparseNet ----
+    # ---- 4. Train SubspaceNet ----
     print("\n" + "=" * 60)
-    print("  TRAINING SparseNet")
+    print("  TRAINING SubspaceNet")
     print("=" * 60)
-    # SparseNet needs its own SystemModel (same params, fresh instance)
-    system_model_sparse = SystemModel(sparse_config.system_model)
-    sparse_model_gen = (
+    # SubspaceNet needs its own SystemModel (same params, fresh instance)
+    system_model_subspace = SystemModel(subspace_config.system_model)
+    subspace_model_gen = (
         ModelGenerator()
-        .set_model_type("SparseNet")
-        .set_system_model(system_model_sparse)
-        .set_model_params(sparse_config.model.model_params)
+        .set_model_type("SubspaceNet")
+        .set_system_model(system_model_subspace)
+        .set_model_params(subspace_config.model.model_params)
         .set_model()
     )
-    sparse_params = build_training_params(sparse_model_gen, train_dataset, sparse_config)
-    sparse_model, sparse_res = train(
-        training_parameters=sparse_params,
+    subspace_params = build_training_params(subspace_model_gen, train_dataset, subspace_config)
+    subspace_model, subspace_res = train(
+        training_parameters=subspace_params,
         saving_path=weights_path,
         plot_curves=False,
         save_figures=False,
     )
-    histories["SparseNet"] = sparse_res
-    models["SparseNet"] = sparse_model
+    histories["SubspaceNet"] = subspace_res
+    models["SubspaceNet"] = subspace_model
 
     # ---- 5. Comparison plots ----
     print("\n" + "=" * 60)

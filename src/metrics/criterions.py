@@ -41,6 +41,12 @@ BALANCE_FACTOR = 1.0
 
 
 def add_line_to_file(file_name, line_to_add):
+    """Append a line to a file if it is not already the last line; create the file if missing.
+
+    Args:
+        file_name (str): Path of the file to append to (created if it does not exist).
+        line_to_add (str): The text line to append.
+    """
     try:
         with open(file_name, 'r+') as file:
             lines = file.readlines()
@@ -87,9 +93,23 @@ def permute_prediction(prediction: torch.Tensor):
 
 class RMSELoss(nn.MSELoss):
     def __init__(self, *args):
+        """Initialize the RMSE loss by forwarding args to the parent nn.MSELoss.
+
+        Args:
+            *args: Positional arguments passed to nn.MSELoss (e.g. reduction).
+        """
         super(RMSELoss, self).__init__(*args)
 
     def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Compute the root mean square error between input and target.
+
+        Args:
+            input (torch.Tensor): Predicted values.
+            target (torch.Tensor): Target values (same shape as input).
+
+        Returns:
+            torch.Tensor: Scalar RMSE (sqrt of the MSE).
+        """
         mse_loss = super(RMSELoss, self).forward(input.to(device), target.to(device))
         return torch.sqrt(mse_loss)
 
@@ -117,6 +137,7 @@ class RMSPELoss(nn.Module):
     """
 
     def __init__(self):
+        """Initialize the RMSPE loss module."""
         super(RMSPELoss, self).__init__()
 
     def forward(self, doa_predictions: torch.Tensor, doa_targets: torch.Tensor):
@@ -159,7 +180,9 @@ class RMSPELoss(nn.Module):
         batch_indices = torch.arange(B, device=doa_predictions.device).unsqueeze(1).expand(B, num_sources)
         row_indices = torch.arange(num_sources, device=doa_predictions.device).unsqueeze(0).expand(B, num_sources)
         optimal_angle_errors = diff_matrix_angle[batch_indices, row_indices, assignments]
-        rmspe_angle = torch.sqrt(torch.sum(optimal_angle_errors ** 2, dim=1) / num_sources)
+        # +eps inside sqrt keeps the gradient finite at zero error (d/dx sqrt(x) -> inf
+        # as x -> 0); without it a perfect prediction yields NaN grads that poison training.
+        rmspe_angle = torch.sqrt(torch.sum(optimal_angle_errors ** 2, dim=1) / num_sources + 1e-12)
 
 
         total_loss = torch.sum(rmspe_angle)
@@ -167,10 +190,14 @@ class RMSPELoss(nn.Module):
 
     @staticmethod
     def batch_hungarian_assignments(cost_matrices):
-        """
-        cost_matrices: Tensor of shape (B, n, n)
+        """Solve a batch of linear-sum-assignment (Hungarian) problems.
+
+        Args:
+            cost_matrices (torch.Tensor): Cost tensor of shape (B, n, n).
+
         Returns:
-            Tensor of shape (B, n) containing the assignment (i.e. permutation indices)
+            torch.Tensor: Tensor of shape (B, n) containing the assignment
+                (i.e. permutation column indices) for each batch element.
         """
         assignments = []
         B = cost_matrices.shape[0]
@@ -222,6 +249,7 @@ class MSPELoss(nn.Module):
     """
 
     def __init__(self):
+        """Initialize the MSPE loss module."""
         super(MSPELoss, self).__init__()
 
     def forward(self, doa_predictions: torch.Tensor, doa,
@@ -278,12 +306,25 @@ class MSPELoss(nn.Module):
 
 class CartesianLoss(nn.Module):
     def __init__(self):
+        """Initialize the Cartesian loss module."""
         super(CartesianLoss, self).__init__()
 
     def forward(self, predictions_angle: torch.Tensor, targets_angle: torch.Tensor, predictions_distance: torch.Tensor,
                 targets_distance: torch.Tensor):
-        """
-        the input given is expected to contain angels and distances.
+        """Compute the minimum-permutation Cartesian (Euclidean) distance loss between predicted and target sources.
+
+        The angle/distance pairs are mapped to (x, y) coordinates and matched over all
+        source permutations; predictions are padded or randomly dropped to match the
+        number of targets M.
+
+        Args:
+            predictions_angle (torch.Tensor): Predicted angles, shape (batch_size, num_predictions).
+            targets_angle (torch.Tensor): Target angles, shape (batch_size, M).
+            predictions_distance (torch.Tensor): Predicted distances, shape (batch_size, num_predictions).
+            targets_distance (torch.Tensor): Target distances, shape (batch_size, M).
+
+        Returns:
+            torch.Tensor: Scalar loss summed over the batch.
         """
         M = targets_angle.shape[1]
         if predictions_angle.shape[1] > targets_angle.shape[1]:
@@ -346,6 +387,12 @@ class ADMMObjective(nn.Module):
     """
 
     def __init__(self, array, mu: float = 2.5e-3) -> None:
+        """Build the selection matrix Phi from the array geometry and store the nuclear-norm weight.
+
+        Args:
+            array: Physical array indices used by build_phi to construct Phi.
+            mu (float): Weight on the nuclear-norm (low-rank) regularization term.
+        """
         super().__init__()
         self.mu = mu
         self.phi = build_phi(array)
@@ -356,10 +403,17 @@ class ADMMObjective(nn.Module):
                 R_hat: Tensor,    # (B, |U|, |U|)
                 Rx:     Tensor,    # (B, |S|, |S|)
                 mu=None) -> Tensor:
-        """
-        Returns a *scalar* loss (mean over batch).
+        """Compute the unsupervised ADMM objective (data-fit + nuclear norm) summed over the batch.
 
         Both tensors must share the same `dtype` / `device`.
+
+        Args:
+            R_hat (Tensor): Reconstructed virtual covariance, shape (B, |U|, |U|).
+            Rx (Tensor): Measured sub-array covariance, shape (B, |S|, |S|).
+            mu (float, optional): Override for the nuclear-norm weight; defaults to self.mu.
+
+        Returns:
+            Tensor: Scalar loss summed over the batch.
         """
         phi  = self.phi.to(R_hat)
         phi_H = self.phi_H.to(R_hat)
@@ -420,17 +474,45 @@ class EigenRegularizationLoss:
     EIGEN_REGULARIZATION_WEIGHT = 0
 
     def __init__(self, init_value=EIGEN_REGULARIZATION_WEIGHT):
+        """Initialize the eigenvalue regularization weight.
+
+        Args:
+            init_value (float): Initial weight applied to the eigen-regularization term.
+        """
         self._eigenregularization_weight = init_value
 
     def get_eigenregularization_weight(self):
+        """Return the current eigen-regularization weight.
+
+        Returns:
+            float: The stored eigen-regularization weight.
+        """
         return self._eigenregularization_weight
 
     def source_estimation_accuracy(self, sources_num, source_estimation=None):
+        """Count how many estimates match the true number of sources.
+
+        Args:
+            sources_num (int): True number of sources.
+            source_estimation (torch.Tensor, optional): Estimated source counts per sample.
+
+        Returns:
+            int: Number of correct estimates, or 0 if source_estimation is None.
+        """
         if source_estimation is None:
             return 0
         return torch.sum(source_estimation == sources_num * torch.ones_like(source_estimation).float()).item()
 
     def get_regularized_loss(self, loss, l_eig=None):
+        """Add the (weighted) eigen-regularization term to the loss and sum it.
+
+        Args:
+            loss (torch.Tensor): Base loss value(s).
+            l_eig (torch.Tensor, optional): Eigenvalue regularization term; if None, no term is added.
+
+        Returns:
+            torch.Tensor: Scalar sum of the regularized loss.
+        """
         if l_eig is not None:
             loss_r = loss + self._eigenregularization_weight * l_eig
         else:

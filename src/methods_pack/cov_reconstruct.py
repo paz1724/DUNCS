@@ -14,11 +14,27 @@ class CovReconstructor(ABC):
     """
     @abstractmethod
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        """Reconstruct a (co)array covariance from observations.
+
+        Args:
+            x (torch.Tensor): Observations, shape [B, S, T].
+
+        Returns:
+            torch.Tensor: Completed covariance, shape [B, U, U].
+        """
         pass
 
 
 class SampleCov(CovReconstructor):
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        """Return the sample covariance of the observations.
+
+        Args:
+            x (torch.Tensor): Observations, shape [B, S, T].
+
+        Returns:
+            torch.Tensor: Sample covariance, shape [B, S, S].
+        """
         return sample_covariance(x).to(device=device)
 
 
@@ -27,9 +43,23 @@ class SpatialSmoothingReconstructor(CovReconstructor):
     Calculates the covariance matrix using forward–backward spatial smoothing technique.
     """
     def __init__(self, sub_array_size=None):
+        """Initialize the spatial-smoothing reconstructor.
+
+        Args:
+            sub_array_size (int, optional): Subarray length; defaults to
+                sensor_number // 2 + 1 when None.
+        """
         self.sub_array_size = sub_array_size
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute the forward-backward spatially-smoothed covariance.
+
+        Args:
+            x (torch.Tensor): Observations, shape [B, S, T] (or [S, T]).
+
+        Returns:
+            torch.Tensor: Smoothed covariance, shape [B, sub_array_size, sub_array_size].
+        """
         # Ensure x has three dimensions (batch, sensors, samples)
         if x.dim() == 2:
             x = x.unsqueeze(0)
@@ -82,11 +112,25 @@ class AveragingReconstructor(CovReconstructor):
     Rx (torch.Tensor): virtual array's covariance matrix
     """
     def __init__(self, sys_model: SystemModel):
+        """Initialize the coarray-averaging reconstructor.
+
+        Args:
+            sys_model (SystemModel): System model providing the sparse array
+                geometry and its virtual ULA segment.
+        """
         self.L = len(sys_model.virtual_array_ula_seg)
         self.virtual_array = sys_model.virtual_array_ula_seg
         self.diff_array = sys_model.array[:, None] - sys_model.array[None, :]
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        """Reconstruct the virtual-array covariance by averaging over difference-coarray lags.
+
+        Args:
+            x (torch.Tensor): Observations, shape [B, S, T].
+
+        Returns:
+            torch.Tensor: Virtual-array covariance, shape [B, L, L].
+        """
         R_real_array = sample_covariance(x)
 
         Rx = torch.zeros(R_real_array.shape[0], self.L, self.L, dtype=torch.complex128)
@@ -119,6 +163,17 @@ class ADMMReconstructor(CovReconstructor):
                      rho: float = 2, max_iter=400, tol_primal: float = 1e-7,
                      tol_dual: float = 1e-7,
                      verbose: bool = False):
+        """Initialize the batched ADMM covariance-completion solver.
+
+        Args:
+            sys_model (SystemModel): System model providing the sparse array geometry.
+            mu (float): Nuclear-norm weight.
+            rho (float): ADMM penalty/step-size parameter.
+            max_iter (int): Maximum number of ADMM iterations.
+            tol_primal (float): Primal residual tolerance for convergence.
+            tol_dual (float): Dual residual tolerance for convergence.
+            verbose (bool): If True, print residuals during iterations.
+        """
         self.sys = sys_model
         self.phi = build_phi(self.sys.array)  # (|S|,|U|)
         self.phi_H = self.phi.t()
@@ -136,7 +191,13 @@ class ADMMReconstructor(CovReconstructor):
         self._verbose = verbose
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        """
+        """Run batched ADMM to complete the Hermitian-Toeplitz-PSD coarray covariance.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Observations, shape [B, S, T].
+
         Returns
         -------
         R_tilde : (B,|U|,|U|) complex tensor
@@ -228,6 +289,13 @@ class ADMMReconstructorCVXPY(CovReconstructor):
     'Structured Nyquist Correlation Reconstruction for DOA Estimation With Sparse Arrays, 2023'
     """
     def __init__(self, sys_model: SystemModel, mu: float = 2.5e-3, **unused_kwargs):
+        """Initialize the CVXPY-based covariance-completion solver.
+
+        Args:
+            sys_model (SystemModel): System model providing the sparse array geometry.
+            mu (float): Nuclear-norm weight.
+            **unused_kwargs: Ignored extra arguments (for interface compatibility).
+        """
         self.sys = sys_model
         self.phi = build_phi(self.sys.array)  # (|S|,|U|)
         self.phi_H = self.phi.t()
@@ -299,6 +367,17 @@ def sample_covariance(x: torch.Tensor):
 
 
 def get_cov_reconstruction_method(method: str, sys_model: SystemModel, **kwargs):
+    """Factory returning the covariance reconstructor matching the requested method.
+
+    Args:
+        method (str): One of 'sample', 'averaging', 'admm', 'admm_cvxpy'
+            (forced to 'sample' for non-sparse arrays).
+        sys_model (SystemModel): System model providing array geometry/parameters.
+        **kwargs: Extra arguments forwarded to the selected reconstructor.
+
+    Returns:
+        CovReconstructor: An instantiated covariance reconstructor.
+    """
     method = method.lower()
     if not sys_model.is_sparse_array:
         method = "sample"

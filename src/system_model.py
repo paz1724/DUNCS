@@ -30,6 +30,12 @@ class SystemModel(object):
     def __init__(self, system_model_params: SystemModelParams):
         """Class used for defining the settings of the system model.
 
+        Args:
+        -----
+            system_model_params (SystemModelParams): Parsed configuration holding
+                array/signal settings (N, M, field_type, signal_type, array_form,
+                antenna_pattern, etc.).
+
         Attributes:
         -----------
             field_type (str): Field environment approximation type. Options: "Far", "Near".
@@ -84,8 +90,8 @@ class SystemModel(object):
             # Use default path if not specified
             pattern_file = self.params.antenna_pattern_file
             if pattern_file is None:
-                # Default path
-                pattern_file = r"D:\HHData\users\Daniel\HofHakshatotAuxilary\Data\Steering\ULA3\SteeringData_Low.mat"
+                # Default path — real measured ULA3 steering data (Mid band: 136-550 MHz)
+                pattern_file = r"C:\GitHub\Hof\Auxiliary\Data\Steering\ULA3\SteeringData_Mid.mat"
             
             if pattern_file:
                 # Check cache first
@@ -133,7 +139,16 @@ class SystemModel(object):
         }
 
     def create_array(self, array_form: str):
-        """create an array of sensors locations, around to origin."""
+        """create an array of sensors locations, around to origin.
+
+        Sets self.array (and self.virtual_array_ula_seg for sparse arrays).
+
+        Args:
+            array_form (str): Array geometry, e.g. "ula" or a sparse form such as "mra-N".
+
+        Raises:
+            ValueError: If the array form is not supported.
+        """
         if array_form.lower() == 'ula':
             self.array = np.linspace(0, self.params.N, self.params.N, endpoint=False)
         elif self.is_sparse_array:
@@ -203,7 +218,15 @@ class SystemModel(object):
         
         # Helper function to extract field from MATLAB struct
         def get_struct_field(struct, field_name):
-            """Extract field from MATLAB struct (structured array)."""
+            """Extract field from MATLAB struct (structured array).
+
+            Args:
+                struct: Loaded MATLAB struct (numpy structured array) or dict.
+                field_name (str): Name of the field to extract.
+
+            Returns:
+                The field's value, or None if the field is absent.
+            """
             if hasattr(struct, 'dtype') and struct.dtype.names and field_name in struct.dtype.names:
                 # It's a structured array - for scalar structs (1x1), use [0, 0]
                 if struct.size == 1:
@@ -301,6 +324,24 @@ class SystemModel(object):
     def steering_vec(self, theta, *, distance: Optional[np.ndarray] = None,
                      f: float = 1, nominal=False,
                      pattern_data=None, generate_search_grid=False):
+        """Computes the array steering vector(s) for the given angle(s), dispatching to the generator.
+
+        Args:
+            theta (np.ndarray): Direction-of-arrival angle(s) in radians.
+            distance (np.ndarray, optional): Source range(s) for near-field models.
+                Defaults to None.
+            f (float): Frequency value/index (used for broadband). Defaults to 1.
+            nominal (bool): If True, generate noiseless (nominal) steering vectors.
+                Defaults to False.
+            pattern_data (dict | tuple, optional): Antenna pattern data; falls back to
+                self.pattern_data when antenna_pattern is enabled. Defaults to None.
+            generate_search_grid (bool): If True, build a full angle/distance grid
+                rather than the diagonal. Defaults to False.
+
+        Returns:
+            np.ndarray: Complex steering vector(s), shape [N] for a single angle or
+                [N, ...] across the requested angle/distance grid.
+        """
         # Use loaded pattern_data if antenna_pattern is enabled and pattern_data is not explicitly provided
         if pattern_data is None and self.params.antenna_pattern and self.pattern_data is not None:
             pattern_data = self.pattern_data
