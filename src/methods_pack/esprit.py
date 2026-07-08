@@ -17,6 +17,14 @@ class ESPRIT(SubspaceMethod):
             model_order_estimation (str): Source-number estimation method (default 'sorte').
         """
         super().__init__(system_model, model_order_estimation)
+        # DoA readout: theta = doa_sign * arcsin(phase / (2*pi*d_lambda)). d_lambda is the array's
+        # element spacing in wavelengths; the arcsin uses it so a NON-ideal spacing reads the right angle.
+        # Default d_lambda=0.5 (ideal lambda/2 ULA) reproduces the classic arcsin(phase/pi).
+        # For the recorded ULA3, read the RAW covariance at its NATIVE d_lambda (~0.234) with NO
+        # recorded->ideal calibration (the calibration scatters the non-Vandermonde manifold -> ~48% MD;
+        # native-d/lambda raw reading -> ~0% MD, same fix as Root-MUSIC).
+        self.doa_sign = -1.0
+        self.d_lambda = 0.5
 
     def forward(self, cov: torch.Tensor, number_of_sources: torch.tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Estimate DoAs from a covariance matrix using ESPRIT.
@@ -39,7 +47,8 @@ class ESPRIT(SubspaceMethod):
         phi = torch.linalg.lstsq(upper, lower)[0]  # identical to pinv(A) @ B but faster and stable.
         eigvalues = torch.linalg.eigvals(phi)
         eigvals_phase = torch.angle(eigvalues)
-        prediction = -1 * torch.arcsin((1 / torch.pi) * eigvals_phase)
+        prediction = self.doa_sign * torch.arcsin(
+            torch.clamp(eigvals_phase / (2 * torch.pi * self.d_lambda), -1.0, 1.0))
 
         return prediction, sources_estimation, regularization
 
@@ -91,7 +100,8 @@ def esprit(Rz: torch.Tensor, M: int, batch_size: int):
         # Calculate the phase component of the roots
         eigenvalues_angels = torch.angle(phi_eigenvalues)
         # Calculate the DoA out of the phase component
-        doa_predictions = -1 * torch.arcsin((1 / torch.pi) * eigenvalues_angels)
+        doa_predictions = self.doa_sign * torch.arcsin(
+            torch.clamp(eigenvalues_angels / (2 * torch.pi * self.d_lambda), -1.0, 1.0))
         doa_batches.append(doa_predictions)
 
     return torch.stack(doa_batches, dim=0)

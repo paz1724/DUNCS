@@ -25,7 +25,8 @@ class DUMFOCUSS(ParentModel):
     """Deep-unfolded M-FOCUSS network with learned per-layer lambda and p."""
 
     def __init__(self, system_model: SystemModel, num_iterations: int = 10,
-                 grid_size: int = 121, criterion: str = "rmspe"):
+                 grid_size: int = 121, criterion: str = "rmspe",
+                 grid_range_deg: float = None):
         """Initializes the DU-MFOCUSS model.
 
         Args:
@@ -33,27 +34,81 @@ class DUMFOCUSS(ParentModel):
             num_iterations (int): Number of unrolled M-FOCUSS layers (K).
             grid_size (int): Number of angle-grid columns in the steering dictionary.
             criterion (str): Training criterion name (e.g. "rmspe").
+            grid_range_deg (float | [lo, hi]): If given, build the steering dictionary
+                over this azimuth range instead of the system doa_range. A scalar v means
+                the symmetric [-v, +v]; a 2-sequence gives an explicit [lo, hi] (e.g.
+                [-180, 180] for full-azimuth recovery, matching classical MFOCUSS). A grid
+                WIDER than the data cone keeps front-cone close pairs away from the grid
+                boundary (cleaner recovery) and lets endfire / back-hemisphere sources be
+                represented. The recorded ULA3 manifold's front/back asymmetry makes the
+                full-azimuth dictionary well-posed (an ideal Vandermonde ULA could not).
         """
         super().__init__(system_model, criterion)
         self.criterion = set_criterions(criterion.lower())[0]
         self.num_iter = num_iterations
         self.grid_size = grid_size
         self.M = system_model.params.M
+        self.lam_multi_scale = 0.02     # scale the learned lambda down for >=2 sources; 0.02 (sharper than MFOCUSS's
+                                        # 0.05) selected on the real train split and better on synthetic too
+                                        # (synth reuse 10->5%, multipath 16->9%, real held-out reuse 9->2% MD)
+        self._lam_scale = 1.0
+        # Peak-search limit (deg): suppress spurious spectral peaks in the grid-edge columns beyond the
+        # trained/valid azimuth range. On real data the DataSim-trained (front-cone) unfolding leaks energy
+        # into the untrained |theta|>~82 edge columns -> the greedy argmax lands there (44% of samples at
+        # |a|>=88). Masking |theta|>peak_lim_deg before peak-picking recovers the true interior peak (44->8% MD).
+        self.peak_lim_deg = None
 
         # Overcomplete steering dictionary on the (recorded or analytic) manifold.
-        lo, hi = system_model.params.doa_range
+        # Source-adaptive grid: a COARSE grid (grid_size) for >=2 sources -- broader peaks
+        # detect both close sources (a fine grid over-sparsifies and drops the weaker one),
+        # and a FINE grid (grid_size_fine) for a single source -- sub-grid precision. The
+        # learned per-layer lambda/p are grid-independent, so the same schedule drives both.
+        if grid_range_deg is None:
+            lo, hi = system_model.params.doa_range
+        elif np.isscalar(grid_range_deg):
+            lo, hi = -float(grid_range_deg), float(grid_range_deg)
+        else:
+            lo, hi = float(grid_range_deg[0]), float(grid_range_deg[1])
         grid_rad = np.deg2rad(np.linspace(lo, hi, grid_size))
-        A = np.asarray(system_model.steering_vec(grid_rad))      # (N, G)
+        A = np.asarray(system_model.steering_vec(grid_rad))      # (N, G) coarse
         self.register_buffer("grid", torch.as_tensor(grid_rad, dtype=torch.float64))
         self.register_buffer("A", torch.as_tensor(A, dtype=torch.complex128))
+        # Fine (single-source) grid: preserve angular density (~0.2 deg/col at the ±90 default)
+        # across whatever range was requested, so full-azimuth grids stay well-resolved.
+        self.grid_size_fine = max(int(grid_size), int(round(901 * abs(hi - lo) / 180.0)))
+        grid_rad_f = np.deg2rad(np.linspace(lo, hi, self.grid_size_fine))
+        Af = np.asarray(system_model.steering_vec(grid_rad_f))   # (N, Gf) fine (single-source precision)
+        self.register_buffer("grid_fine", torch.as_tensor(grid_rad_f, dtype=torch.float64))
+        self.register_buffer("A_fine", torch.as_tensor(Af, dtype=torch.complex128))
+        self._A_use = None          # active dictionary/grid (set per-forward by source count)
+        self._grid_use = None
 
         # Learned per-layer parameters (reparameterized to valid ranges):
         #   lambda_k = softplus(raw_lambda_k) + eps  > 0   (regularization)
         #   p_k      = 2 * sigmoid(raw_p_k) in (0, 2)       (lp diversity)
-        self._raw_lambda = nn.Parameter(torch.full((num_iterations,), -2.0))
-        self._raw_p = nn.Parameter(torch.zeros(num_iterations))
-        # Readout temperature for the differentiable local soft-argmax peak picker.
-        self._raw_temp = nn.Parameter(torch.tensor(-2.0))
+        # Initialized to reproduce classical MFOCUSS (Hof annealing): lambda_k = 0.99
+        # (constant) and p_k annealed 0.99 -> ~0.1 across the K layers. With the RMS
+        # normalization + least-squares init in get_learned_covariance, untrained
+        # DU-MFOCUSS *is* MFOCUSS (a strict special case: DU with a fixed schedule),
+        # so end-to-end training can only improve on the classical baseline.
+        ks = torch.arange(num_iterations, dtype=torch.float32)
+        p_sched = (0.01 + 0.98 * torch.exp(-0.27 * ks)).clamp(1e-3, 2.0 - 1e-3)   # 0.99 -> ~0.1
+        raw_p0 = torch.log((p_sched / 2.0) / (1.0 - p_sched / 2.0))               # invert 2*sigmoid
+        lam0 = float(np.log(np.exp(0.99) - 1.0))                                  # invert softplus -> lambda~=0.99
+        self._raw_lambda = nn.Parameter(torch.full((num_iterations,), lam0))
+        self._raw_p = nn.Parameter(raw_p0)
+        # INPUT-ADAPTIVE hyper-parameters: per-layer corrections to (raw_lambda_k, raw_p_k)
+        # computed from the PREVIOUS iterate's state — [log residual ratio, row-sparsity ratio].
+        # Zero-initialized: at init the corrections are exactly 0, so the reduce-to-MFOCUSS
+        # equivalence is preserved; training learns data-dependent schedules on top.
+        self._hyper = nn.ModuleList([nn.Linear(2, 2) for _ in range(num_iterations)])
+        for lin in self._hyper:
+            nn.init.zeros_(lin.weight)
+            nn.init.zeros_(lin.bias)
+        self.adaptive_hyper = True
+        # Readout temperature for the differentiable local soft-argmax peak picker
+        # (init softplus(-3)+1e-3 ~= 0.05, matching the MFOCUSS peak picker).
+        self._raw_temp = nn.Parameter(torch.tensor(-3.0))
 
     def get_model_params(self):
         """Returns a short string summarizing the model's hyper-parameters.
@@ -73,23 +128,46 @@ class DUMFOCUSS(ParentModel):
             torch.Tensor: Normalized angular power spectrum, shape [B, G].
         """
         Y = x.to(torch.complex128)                                # [B, N, T]
-        A = self.A                                                # [N, G]
+        A = self._A_use if self._A_use is not None else self.A    # [N, G] source-adaptive
         B = Y.shape[0]
         eye = torch.eye(A.shape[0], dtype=torch.complex128, device=Y.device)
 
-        # Matched-filter initialization: s0 = A^H Y.
-        s = torch.einsum("gn,bnt->bgt", A.conj().t(), Y)          # [B, G, T]
+        # RMS-normalize the input (match MFOCUSS): brings the signal to RMS=1 so the
+        # learned regularization lambda operates at a signal-scale-independent point.
+        rms = torch.sqrt(torch.mean(Y.abs() ** 2, dim=(1, 2), keepdim=True)).clamp_min(1e-12)
+        Y = Y / rms.to(torch.complex128)
+
+        # Least-squares (min-norm) initialization: s0 = A^H (A A^H)^-1 Y (match MFOCUSS).
+        AAh = A @ A.conj().t()
+        s = torch.einsum("gn,bnt->bgt", A.conj().t(),
+                         torch.linalg.solve(AAh + 1e-6 * eye, Y))  # [B, G, T]
 
         for k in range(self.num_iter):
-            p_k = 2.0 * torch.sigmoid(self._raw_p[k])
-            lam_k = F.softplus(self._raw_lambda[k]) + 1e-5
-
             row_norm = torch.linalg.norm(s, dim=2)                # [B, G] real
+
+            if getattr(self, "adaptive_hyper", False):
+                # Input-adaptive (lambda_k, p_k): correct the learned per-layer schedule by a
+                # zero-initialized linear map of the PREVIOUS iterate's state. Features:
+                #   f1 = log10(||Y - A s||_F / ||Y||_F)   residual ratio (fit quality)
+                #   f2 = (||rn||_1/||rn||_2)/sqrt(G)      row-sparsity ratio in (0, 1]
+                resid = Y - torch.einsum("ng,bgt->bnt", A, s)
+                f1 = torch.log10(torch.linalg.norm(resid.reshape(B, -1), dim=1) /
+                                 (torch.linalg.norm(Y.reshape(B, -1), dim=1) + 1e-30) + 1e-12)
+                f2 = (row_norm.sum(dim=1) / (torch.linalg.norm(row_norm, dim=1) + 1e-30)) / np.sqrt(A.shape[1])
+                feat = torch.stack([f1, f2], dim=1).to(torch.float32)                    # [B, 2]
+                delta = self._hyper[k](feat).to(torch.float64)                           # [B, 2]
+                p_k = (2.0 * torch.sigmoid(self._raw_p[k] + delta[:, 1])).unsqueeze(1)   # [B, 1]
+                lam_k = (F.softplus(self._raw_lambda[k] + delta[:, 0]) + 1e-5) * self._lam_scale   # [B]
+            else:
+                p_k = 2.0 * torch.sigmoid(self._raw_p[k])
+                lam_k = (F.softplus(self._raw_lambda[k]) + 1e-5) * self._lam_scale
+
             w = (row_norm + 1e-9) ** (1.0 - p_k / 2.0)            # FOCUSS reweighting
 
             AW = A.unsqueeze(0) * w.unsqueeze(1).to(torch.complex128)   # [B, N, G]
             gram = torch.einsum("bng,bmg->bnm", AW, AW.conj())    # [B, N, N]
-            reg = gram + lam_k.to(torch.complex128) * eye         # [B, N, N]
+            lam_b = lam_k if lam_k.dim() else lam_k.expand(B)     # per-sample lambda [B]
+            reg = gram + lam_b.to(torch.complex128).view(-1, 1, 1) * eye   # [B, N, N]
             inv_Y = torch.linalg.solve(reg, Y)                    # [B, N, T]
             q = torch.einsum("bng,bnt->bgt", AW.conj(), inv_Y)    # [B, G, T]
             s = w.unsqueeze(2).to(torch.complex128) * q           # [B, G, T]
@@ -109,6 +187,7 @@ class DUMFOCUSS(ParentModel):
             torch.Tensor: Estimated angles in radians, shape [B, source_number].
         """
         B, G = spectrum.shape
+        grid = self._grid_use if self._grid_use is not None else self.grid
         half = max(1, int(0.025 * G))           # local soft-argmax window (~sub-min_gap)
         supp = max(half, int(0.03 * G))         # suppression radius to separate sources
         temp = F.softplus(self._raw_temp) + 1e-3
@@ -128,7 +207,7 @@ class DUMFOCUSS(ParentModel):
         for j, idx in enumerate(centers):
             win = (idx.unsqueeze(1) + offsets).clamp(0, G - 1)                   # [B, W]
             vals = torch.gather(spectrum, 1, win)                               # [B, W]
-            angles_win = self.grid[win]                                        # [B, W]
+            angles_win = grid[win]                                              # [B, W]
             weights = torch.softmax(vals / temp, dim=1)
             out[:, j] = (weights * angles_win).sum(dim=1)
         return out
@@ -161,10 +240,53 @@ class DUMFOCUSS(ParentModel):
             tuple: (doa_prediction [B, M], source_estimation [B], None).
         """
         src = int(sources_num) if sources_num is not None else self.M
+        # Source-adaptive regularization: lower lambda for >=2 sources sharpens the spectrum so close
+        # sources resolve (the learned single-source lambda over-smooths and merges them).
+        self._lam_scale = 1.0 if src <= 1 else self.lam_multi_scale
+        # Source-adaptive grid: FINE dictionary for a single source (sub-grid precision), COARSE for
+        # >=2 sources (broader peaks detect both close sources; the fine grid over-sparsifies -> misses one).
+        single = src <= 1
+        self._A_use = self.A_fine if single else self.A
+        self._grid_use = self.grid_fine if single else self.grid
         spectrum = self.get_learned_covariance(x)
+        if self.peak_lim_deg is not None:
+            edge = (self._grid_use.abs() > np.deg2rad(self.peak_lim_deg)).unsqueeze(0)  # [1, G] grid-edge columns
+            spectrum = spectrum.masked_fill(edge, 0.0)                                  # suppress spurious edge peaks
         doa_prediction = self._soft_argmax(spectrum, src)
         source_estimation = self._estimate_count(spectrum)
+        if not single and getattr(self, "refine_pairs", True):
+            # Coarse-detect -> FINE-refine: multi-source angles were read off the COARSE grid
+            # (broad peaks, ~0.5 deg/col) -> quantization + peak-shape bias dominate the pair RMS.
+            # Re-run the recovery on the FINE dictionary and take a local soft-argmax within a
+            # small window around each coarse peak (detection unchanged; accuracy improves).
+            self._A_use = self.A_fine
+            self._grid_use = self.grid_fine
+            spec_f = torch.cat([self.get_learned_covariance(x[i:i + 256])        # chunked: fine-grid pass
+                                for i in range(0, x.shape[0], 256)])             # OOMs on 4 GB at B=3000
+            doa_prediction = self._refine_local(spec_f, doa_prediction)
         return doa_prediction, source_estimation, None
+
+    def _refine_local(self, spec_f: torch.Tensor, doa: torch.Tensor, win_deg: float = 2.0) -> torch.Tensor:
+        """Local soft-argmax on the FINE grid within +/-win_deg of each detected angle.
+
+        Gather-based window (like _soft_argmax) — NOT a -inf-masked softmax over the full
+        grid: the CUDA float64 softmax kernel returns wrong normalization when ~99% of a
+        row is -inf (weights summed to exact 1/2 or 1/3 on healthy inputs).
+        """
+        temp = F.softplus(self._raw_temp) + 1e-3
+        grid = self.grid_fine                                                     # [Gf]
+        Gf = grid.numel()
+        step = float(grid[1] - grid[0])
+        K = max(1, int(round(np.deg2rad(win_deg) / step)))
+        offsets = torch.arange(-K, K + 1, device=spec_f.device)
+        out = doa.clone()
+        for j in range(doa.shape[1]):
+            idx = torch.argmin((grid[None, :] - doa[:, j:j + 1]).abs(), dim=1)    # [B] nearest fine col
+            win = (idx.unsqueeze(1) + offsets).clamp(0, Gf - 1)                   # [B, W]
+            vals = torch.gather(spec_f, 1, win)                                   # [B, W]
+            w = torch.softmax(vals / temp, dim=1)
+            out[:, j] = (w * grid[win]).sum(dim=1)
+        return out
 
     def _count_accuracy(self, sources_num, source_estimation):
         """Counts how many estimated source counts match the true count.

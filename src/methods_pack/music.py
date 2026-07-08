@@ -738,11 +738,40 @@ class MVDR(MUSIC):
         R = cov.to(torch.complex128)
         N = R.shape[-1]
         eye = torch.eye(N, dtype=torch.complex128, device=R.device)
-        Rinv = torch.linalg.solve(R + 1e-3 * eye, eye.expand(R.shape[0], N, N))   # [B,N,N]
+        # Diagonal loading: rel_loading (if set) scales with the covariance power (trace/N) --
+        # the principled form; None keeps the legacy absolute 1e-3 (which over-loads small-scale
+        # learned covariances -> blurred Capon spectrum -> merged close pairs).
+        rel = getattr(self, "rel_loading", None)
+        if rel is not None:
+            pwr = torch.diagonal(R, dim1=-2, dim2=-1).real.mean(-1).clamp_min(1e-30)   # [B]
+            load = (rel * pwr)[:, None, None] * eye
+        else:
+            load = 1e-3 * eye
+        Rinv = torch.linalg.solve(R + load, eye.expand(R.shape[0], N, N))          # [B,N,N]
         A = self.search_grid.to(torch.complex128).to(R.device)                    # [N,G]
         tmp = torch.einsum("bnm,mg->bng", Rinv, A)                                # [B,N,G]
         denom = torch.einsum("ng,bng->bg", A.conj(), tmp).real                    # [B,G] = aᴴR⁻¹a
         self.music_spectrum = 1.0 / (denom + 1e-9)                                # Capon spectrum
+        if getattr(self, "sic", False) and M >= 2:
+            # Sequential cancellation (CLEAN/SIC): Capon's beamwidth merges close pairs into one
+            # peak, so the second source is missed. Find the strongest source, project it OUT of
+            # the covariance (deflation), and run Capon again for the weaker one.
+            th1 = self.peak_finder(1)                                              # [B,1] strongest source
+            idx1 = torch.argmin((self.angels[None, :] - th1).abs(), dim=1)         # [B] nearest grid col
+            a1 = A[:, idx1].transpose(0, 1)                                        # [B,N]
+            nrm = (a1.conj() * a1).sum(-1, keepdim=True).real.clamp_min(1e-30)
+            P = eye[None] - torch.einsum("bn,bm->bnm", a1, a1.conj()) / nrm[..., None].to(torch.complex128)
+            R2 = P @ R @ P.conj().transpose(-2, -1)
+            pwr2 = torch.diagonal(R2, dim1=-2, dim2=-1).real.mean(-1).clamp_min(1e-30)
+            Rinv2 = torch.linalg.solve(R2 + (1e-3 * pwr2)[:, None, None] * eye, eye.expand(R.shape[0], N, N))
+            den2 = torch.einsum("ng,bng->bg", A.conj(), torch.einsum("bnm,mg->bng", Rinv2, A)).real
+            spec2 = 1.0 / (den2 + 1e-9)
+            guard = (self.angels[None, :] - th1).abs() < np.deg2rad(getattr(self, "sic_guard_deg", 6.0))
+            self.music_spectrum = spec2.masked_fill(guard, 0.0)                    # keep source 1 out of pick 2
+            th2 = self.peak_finder(1)                                              # [B,1] second source
+            params = torch.sort(torch.cat([th1, th2], dim=1), dim=1).values
+            src_est = torch.full((R.shape[0],), int(M), device=R.device)
+            return params, src_est, torch.tensor(0.0, device=R.device)
         params = self.peak_finder(M)
         src_est = torch.full((R.shape[0],), int(M), device=R.device)
         return params, src_est, torch.tensor(0.0, device=R.device)

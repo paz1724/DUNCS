@@ -25,16 +25,19 @@ class MFOCUSS(ParentModel):
 
     def __init__(self, system_model: SystemModel, num_iterations: int = 50,
                  grid_size: int = 121, p: float = 0.8, lam: float = 0.05,
-                 criterion: str = "rmspe"):
+                 criterion: str = "rmspe", grid_range_deg=None):
         """Initializes the classical MFOCUSS baseline.
 
         Args:
             system_model (SystemModel): Array geometry and signal parameters.
             num_iterations (int): Number of M-FOCUSS iterations (fixed, not unrolled).
-            grid_size (int): Number of angle-grid columns in the steering dictionary.
+            grid_size (int): Number of angle-grid columns in the FINE (single-source)
+                steering dictionary; the multi-source dictionary is COARSE (<=361 cols).
             p (float): Fixed lp-diversity exponent in (0, 2] (smaller = sparser).
             lam (float): Fixed regularization weight (> 0).
             criterion (str): Evaluation criterion name (e.g. "rmspe").
+            grid_range_deg (float | [lo, hi]): Optional grid azimuth range override
+                (scalar = symmetric); same semantics as DU-MFOCUSS.
         """
         super().__init__(system_model, criterion)
         self.criterion = set_criterions(criterion.lower())[0]
@@ -46,14 +49,30 @@ class MFOCUSS(ParentModel):
         # p_init toward p_min (rate p_decay); lambda stays at 0.99 (lam_init==lam_max).
         self.p_init, self.p_min, self.p_decay = 0.99, 0.01, 0.2
         self.lam_init, self.lam_max, self.lam_growth = 0.99, 0.99, 0.2
-        self.lam_multi = 0.05      # low regularization for >=2 sources (resolution over smoothness)
+        self.lam_multi = 0.02      # low regularization for >=2 sources (0.02: sharper than the old 0.05 —
+                                   # same value as DU's train-selected scale; better on synthetic too)
         self.M = system_model.params.M
 
-        lo, hi = system_model.params.doa_range
-        grid_rad = np.deg2rad(np.linspace(lo, hi, grid_size))
-        A = np.asarray(system_model.steering_vec(grid_rad))      # (N, G)
+        # Source-adaptive grid (backported from DU-MFOCUSS): COARSE grid for >=2 sources
+        # (broad peaks detect BOTH close sources; a fine grid over-sparsifies and drops the
+        # weaker one), FINE grid for a single source (sub-grid precision).
+        if grid_range_deg is None:
+            lo, hi = system_model.params.doa_range
+        elif np.isscalar(grid_range_deg):
+            lo, hi = -float(grid_range_deg), float(grid_range_deg)
+        else:
+            lo, hi = float(grid_range_deg[0]), float(grid_range_deg[1])
+        gm = min(int(grid_size), int(round(361 * abs(hi - lo) / 180.0)))
+        grid_rad = np.deg2rad(np.linspace(lo, hi, gm))
+        A = np.asarray(system_model.steering_vec(grid_rad))      # (N, Gm) coarse (M>=2)
         self.register_buffer("grid", torch.as_tensor(grid_rad, dtype=torch.float64))
         self.register_buffer("A", torch.as_tensor(A, dtype=torch.complex128))
+        grid_rad_f = np.deg2rad(np.linspace(lo, hi, grid_size))
+        Af = np.asarray(system_model.steering_vec(grid_rad_f))   # (N, G) fine (M=1)
+        self.register_buffer("grid_fine", torch.as_tensor(grid_rad_f, dtype=torch.float64))
+        self.register_buffer("A_fine", torch.as_tensor(Af, dtype=torch.complex128))
+        self._A_use = None
+        self._grid_use = None
 
     def get_model_params(self):
         """Returns a short string summarizing the model's hyper-parameters.
@@ -86,7 +105,7 @@ class MFOCUSS(ParentModel):
         Y = x.to(torch.complex128)
         rms = torch.sqrt(torch.mean(Y.abs() ** 2, dim=(1, 2), keepdim=True)).clamp_min(1e-12)
         Y = Y / rms.to(torch.complex128)                        # bring signal to RMS = 1
-        A = self.A
+        A = self._A_use if self._A_use is not None else self.A  # source-adaptive dictionary
         N = A.shape[0]
         eye = torch.eye(N, dtype=torch.complex128, device=Y.device)
         # least-squares (min-norm) initialization: mu0 = A^H (A A^H)^-1 Y
@@ -120,6 +139,7 @@ class MFOCUSS(ParentModel):
             torch.Tensor: Estimated angles in radians, shape [B, source_number].
         """
         B, G = spectrum.shape
+        grid = self._grid_use if self._grid_use is not None else self.grid
         half = max(1, int(0.025 * G))
         supp = max(half, int(0.03 * G))
         grid_idx = torch.arange(G, device=spectrum.device)
@@ -135,7 +155,7 @@ class MFOCUSS(ParentModel):
         for j, idx in enumerate(centers):
             win = (idx.unsqueeze(1) + offsets).clamp(0, G - 1)
             vals = torch.gather(spectrum, 1, win)
-            ang = self.grid[win]
+            ang = grid[win]
             w = torch.softmax(vals / 0.05, dim=1)
             out[:, j] = (w * ang).sum(dim=1)
         return out
@@ -170,8 +190,35 @@ class MFOCUSS(ParentModel):
         # (smooth -> precise); >=2 sources use a low constant lambda (sharp -> resolves close
         # sources instead of merging them into one peak and missing the other).
         lam_const = None if src <= 1 else self.lam_multi
+        # Source-adaptive grid (mirrors DU-MFOCUSS): fine for M=1, coarse for M>=2.
+        single = src <= 1
+        self._A_use = self.A_fine if single else self.A
+        self._grid_use = self.grid_fine if single else self.grid
         spectrum = self._spectrum(x, lam_const)
-        return self._pick(spectrum, src), self._estimate_count(spectrum), None
+        doa = self._pick(spectrum, src)
+        if not single and getattr(self, "refine_pairs", True):
+            # Coarse-detect -> FINE-refine (mirrors DU-MFOCUSS): re-run the recovery on the fine
+            # dictionary and take a local soft-argmax around each coarse peak (accuracy only).
+            self._A_use = self.A_fine
+            self._grid_use = self.grid_fine
+            spec_f = torch.cat([self._spectrum(x[i:i + 256], lam_const)          # chunked: fine-grid pass
+                                for i in range(0, x.shape[0], 256)])             # OOMs on 4 GB at B=3000
+            # Gather-based window (like _pick) — NOT a -inf-masked softmax over the full grid:
+            # the CUDA float64 softmax kernel mis-normalizes when ~99% of a row is -inf.
+            grid = self.grid_fine
+            Gf = grid.numel()
+            step = float(grid[1] - grid[0])
+            K = max(1, int(round(np.deg2rad(2.0) / step)))
+            offsets = torch.arange(-K, K + 1, device=spec_f.device)
+            out = doa.clone()
+            for j in range(doa.shape[1]):
+                idx = torch.argmin((grid[None, :] - doa[:, j:j + 1]).abs(), dim=1)
+                win = (idx.unsqueeze(1) + offsets).clamp(0, Gf - 1)
+                vals = torch.gather(spec_f, 1, win)
+                w = torch.softmax(vals / 0.05, dim=1)
+                out[:, j] = (w * grid[win]).sum(dim=1)
+            doa = out
+        return doa, self._estimate_count(spectrum), None
 
     def _count_accuracy(self, sources_num, source_estimation):
         """Counts how many estimated source counts match the true count.

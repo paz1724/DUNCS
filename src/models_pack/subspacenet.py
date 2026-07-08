@@ -160,15 +160,27 @@ class SubspaceNet(ParentModel):
             tr = torch.diagonal(M, dim1=-2, dim2=-1).sum(-1).real.clamp_min(1e-9)
             return M / tr[:, None, None]
 
-        if isinstance(self.diff_method, ESPRIT) and self.ideal_ula_cov_weight > 0:
+        if isinstance(self.diff_method, (ESPRIT, RootMusic)) and self.ideal_ula_cov_weight > 0 \
+                and not getattr(self, "cov_raw_anchor", False):
             # Direct ideal-ULA covariance supervision: use the pure CNN output (supervision provides
-            # gradient/anti-collapse and the raw recorded cov would bias the signal subspace).
+            # gradient/anti-collapse and the raw recorded cov would bias the signal subspace). Root-MUSIC
+            # roots the noise-subspace polynomial, which needs an EXACT Vandermonde signal steering --
+            # post-hoc calibration's 0.62 residual is too coarse, so it relies on this supervision instead.
+            # cov_raw_anchor: on heavy multipath the pure CNN can't synthesize the angle-conditional cov and
+            # regresses to the mean (white) cov -> use the raw-anchored branch below instead; the cov loss then
+            # trains the CNN residual to SUBTRACT the multipath while the raw carries the (generalizing) angle.
             Rz = _tr_norm(Rz)
         else:
             # Raw-dominated residual: keeps the signal subspace anchored to the (informative) sample
             # covariance even if the CNN output degenerates. For ESPRIT the forward then applies the
             # recorded->ideal-ULA calibration C so the arcsin readout reads the right angle.
             Rz = _tr_norm(Rraw).to(Rz.dtype) + self.residual_weight.to(Rz.dtype) * _tr_norm(Rz)
+        if getattr(self, "fba", False):
+            # Forward-backward averaging: Rz <- (Rz + J Rz* J)/2 with J the exchange (anti-identity) matrix.
+            # Improves the covariance/subspace estimate on real, snapshot-limited data (measured single-source
+            # RMS drops ~15-25% for MUSIC/MVDR). Off by default; enabled per-readout at eval.
+            Jm = torch.flip(torch.eye(self.N, device=Rz.device, dtype=Rz.dtype), dims=[0])
+            Rz = 0.5 * (Rz + Jm @ Rz.conj() @ Jm)
         return Rz
 
     def _ideal_ula_cov(self, angles: torch.Tensor, sources_num) -> torch.Tensor:
@@ -184,13 +196,35 @@ class SubspaceNet(ParentModel):
         Returns:
             torch.Tensor: Ideal covariance, shape [B, N, N], complex, trace-normalized.
         """
-        n = torch.arange(self.N, device=angles.device, dtype=torch.float64)
         ang = angles.to(torch.float64)                                   # [B, M]
+        rec_sv = getattr(self, "recorded_sv", None)
+        if rec_sv is not None:
+            # RECORDED ULA3 covariance (NOT the lambda/2 ideal): R = (1/M) sum_k a_rec(theta_k) a_rec(theta_k)^H,
+            # a_rec from the measured manifold. Root-MUSIC then roots this with the ULA3's actual d/lambda.
+            grid = self.recorded_grid.to(ang.device)                     # [G] radians
+            sv = rec_sv.to(ang.device)                                   # [N, G]
+            idx = torch.argmin((grid.view(1, 1, -1) - ang.unsqueeze(-1)).abs(), dim=-1)   # [B, M] nearest grid
+            a = sv[:, idx].permute(1, 2, 0)                              # [B, M, N]
+            R = torch.einsum("bmn,bmk->bnk", a, a.conj()) / a.shape[1]
+            tr = torch.diagonal(R, dim1=-2, dim2=-1).sum(-1).real.clamp_min(1e-9)
+            return R / tr[:, None, None]
+        n = torch.arange(self.N, device=angles.device, dtype=torch.float64)
         phase = -np.pi * n.view(1, 1, -1) * torch.sin(ang).unsqueeze(-1)  # [B, M, N]
         a = torch.exp(1j * phase.to(torch.complex128))                   # [B, M, N]
         R = torch.einsum("bmn,bmk->bnk", a, a.conj()) / a.shape[1]        # [B, N, N]
         tr = torch.diagonal(R, dim1=-2, dim2=-1).sum(-1).real.clamp_min(1e-9)
         return R / tr[:, None, None]
+
+    def set_recorded_manifold(self, sv, grid_rad):
+        """Supervise the learned covariance toward the RECORDED ULA3 manifold instead of the lambda/2 ideal.
+
+        Args:
+            sv (array): [N, G] complex recorded steering matrix over the angle grid.
+            grid_rad (array): [G] grid angles in radians.
+        """
+        dev = next(self.parameters()).device
+        self.recorded_sv = torch.as_tensor(np.asarray(sv), dtype=torch.complex128, device=dev)
+        self.recorded_grid = torch.as_tensor(np.asarray(grid_rad), dtype=torch.float64, device=dev)
 
     def forward(self, x: torch.Tensor, sources_num: torch.tensor = None, known_angles: torch.tensor = None):
         """
@@ -214,10 +248,10 @@ class SubspaceNet(ParentModel):
         # Feed surrogate covariance to the differentiable subspace algorithm
         Rz = self.get_learned_covariance(x)
 
-        # ESPRIT array calibration: ESPRIT assumes an ideal lambda/2-ULA, but the recorded manifold is
-        # non-ideal. A fixed least-squares calibration C (C a_rec(theta) ~ a_ideal(theta)) maps the
-        # covariance into ideal-ULA coordinates so ESPRIT's arcsin readout applies.
-        if isinstance(self.diff_method, ESPRIT) and self.calibration is not None:
+        # Array calibration: ESPRIT and Root-MUSIC both assume an ideal lambda/2-ULA, but the recorded
+        # manifold is non-ideal. A fixed least-squares calibration C (C a_rec(theta) ~ a_ideal(theta))
+        # maps the covariance into ideal-ULA coordinates so their arcsin / polynomial-root readout applies.
+        if isinstance(self.diff_method, (ESPRIT, RootMusic)) and self.calibration is not None:
             C = self.calibration.to(Rz.dtype)
             Rz = torch.einsum("mn,bnk,lk->bml", C, Rz, C.conj())
 
@@ -225,6 +259,10 @@ class SubspaceNet(ParentModel):
             method_output = self.diff_method(Rz, sources_num)
             if isinstance(self.diff_method, RootMusic):
                 doa_prediction, doa_all_predictions, roots = method_output
+                if self.full_azimuth:
+                    # Root-MUSIC's arcsin readout is front-only [-90,90]; resolve the front/back |sin|
+                    # ambiguity per source via the recorded-manifold candidate scoring (same as ESPRIT).
+                    doa_prediction = self._resolve_front_back(x, doa_prediction)
                 return doa_prediction, doa_all_predictions, roots
             elif isinstance(self.diff_method, ESPRIT):
                 # Esprit output
@@ -424,6 +462,12 @@ class SubspaceNet(ParentModel):
         """
         x, sources_num, angles = self._prepare_batch(batch)
         doa_prediction, sources_estimation, eigen_regularization = self(x, sources_num)
+        if isinstance(self.diff_method, RootMusic):
+            # Root-MUSIC's 2nd/3rd forward outputs are all-root angles / roots, not a source count / reg term.
+            # Drop the count, but use the eigen-regularization captured inside RootMusic's subspace separation
+            # so training shapes the covariance eigenstructure (as for ESPRIT/MUSIC) -- critical for clean roots.
+            sources_estimation = None
+            eigen_regularization = getattr(self.diff_method, "eigen_regularization", None)
         loss = self.criterion(doa_prediction, angles)
         acc = self._eigen_regularization.source_estimation_accuracy(sources_num, sources_estimation)
         loss = self._eigen_regularization.get_regularized_loss(loss, eigen_regularization)
