@@ -97,11 +97,17 @@ class DUMFOCUSS(ParentModel):
         lam0 = float(np.log(np.exp(0.99) - 1.0))                                  # invert softplus -> lambda~=0.99
         self._raw_lambda = nn.Parameter(torch.full((num_iterations,), lam0))
         self._raw_p = nn.Parameter(raw_p0)
-        # INPUT-ADAPTIVE hyper-parameters: per-layer corrections to (raw_lambda_k, raw_p_k)
+        # MCP (minimax concave penalty) per-layer de-bias strength m_k = softplus(raw_mcp_k) >= 0.
+        # The MCP term reduces FOCUSS's over-shrinkage of already-strong atoms by boosting their
+        # reweight in proportion to the PREVIOUS iterate's relative magnitude (see the loop below).
+        # Initialized at raw=-16 -> m_k ~= 1e-7 ~= 0, so at init the reweight is the plain FOCUSS
+        # weight and the reduce-to-MFOCUSS equivalence is preserved (verified to <1e-6).
+        self._raw_mcp = nn.Parameter(torch.full((num_iterations,), -16.0))
+        # INPUT-ADAPTIVE hyper-parameters: per-layer corrections to (raw_lambda_k, raw_p_k, raw_mcp_k)
         # computed from the PREVIOUS iterate's state — [log residual ratio, row-sparsity ratio].
         # Zero-initialized: at init the corrections are exactly 0, so the reduce-to-MFOCUSS
-        # equivalence is preserved; training learns data-dependent schedules on top.
-        self._hyper = nn.ModuleList([nn.Linear(2, 2) for _ in range(num_iterations)])
+        # equivalence is preserved; training learns data-dependent schedules (incl. the MCP) on top.
+        self._hyper = nn.ModuleList([nn.Linear(2, 3) for _ in range(num_iterations)])
         for lin in self._hyper:
             nn.init.zeros_(lin.weight)
             nn.init.zeros_(lin.bias)
@@ -142,7 +148,14 @@ class DUMFOCUSS(ParentModel):
         s = torch.einsum("gn,bnt->bgt", A.conj().t(),
                          torch.linalg.solve(AAh + 1e-6 * eye, Y))  # [B, G, T]
 
-        for k in range(self.num_iter):
+        # Iteration budget parity with classical MFOCUSS (K=100): after the K learned layers,
+        # optionally continue iterating with the LAST layer's learned (lambda, p, mcp), annealing p
+        # down the same Hof tail (p -> 0.01). At init this reduces DU to MFOCUSS-(K+extend) — the
+        # deployed MFOCUSS budget — so the learned model can only add on top, never lag on budget.
+        extend = int(getattr(self, "extend_iters", 0))
+        total_iters = self.num_iter + extend
+        for k in range(total_iters):
+            kk = min(k, self.num_iter - 1)                        # extension reuses the last layer
             row_norm = torch.linalg.norm(s, dim=2)                # [B, G] real
 
             if getattr(self, "adaptive_hyper", False):
@@ -155,14 +168,26 @@ class DUMFOCUSS(ParentModel):
                                  (torch.linalg.norm(Y.reshape(B, -1), dim=1) + 1e-30) + 1e-12)
                 f2 = (row_norm.sum(dim=1) / (torch.linalg.norm(row_norm, dim=1) + 1e-30)) / np.sqrt(A.shape[1])
                 feat = torch.stack([f1, f2], dim=1).to(torch.float32)                    # [B, 2]
-                delta = self._hyper[k](feat).to(torch.float64)                           # [B, 2]
-                p_k = (2.0 * torch.sigmoid(self._raw_p[k] + delta[:, 1])).unsqueeze(1)   # [B, 1]
-                lam_k = (F.softplus(self._raw_lambda[k] + delta[:, 0]) + 1e-5) * self._lam_scale   # [B]
+                delta = self._hyper[kk](feat).to(torch.float64)                           # [B, 3]
+                p_k = (2.0 * torch.sigmoid(self._raw_p[kk] + delta[:, 1])).unsqueeze(1)   # [B, 1]
+                lam_k = (F.softplus(self._raw_lambda[kk] + delta[:, 0]) + 1e-5) * self._lam_scale   # [B]
+                m_k = F.softplus(self._raw_mcp[kk] + delta[:, 2]).unsqueeze(1)             # [B, 1] MCP de-bias
             else:
-                p_k = 2.0 * torch.sigmoid(self._raw_p[k])
-                lam_k = (F.softplus(self._raw_lambda[k]) + 1e-5) * self._lam_scale
+                p_k = 2.0 * torch.sigmoid(self._raw_p[kk])
+                lam_k = (F.softplus(self._raw_lambda[kk]) + 1e-5) * self._lam_scale
+                m_k = F.softplus(self._raw_mcp[kk])
 
-            w = (row_norm + 1e-9) ** (1.0 - p_k / 2.0)            # FOCUSS reweighting
+            if k >= self.num_iter:
+                # extension tail: continue the Hof p-anneal from the last layer's p toward 0.01
+                decay = float(np.exp(-0.2 * (k - self.num_iter + 1)))
+                p_k = 0.01 + (p_k - 0.01) * decay
+
+            # FOCUSS reweight + learned MCP de-bias: the (1 + m_k*rn) factor boosts the reweight for
+            # already-strong atoms (relative magnitude rn in [0,1] from the PREVIOUS iterate),
+            # countering FOCUSS's over-shrinkage of large coefficients (the minimax-concave idea:
+            # taper the penalty as a coefficient grows). m_k~0 at init -> factor ~1 -> classical FOCUSS.
+            rn = row_norm / (row_norm.amax(dim=1, keepdim=True) + 1e-9)   # [B, G] relative magnitude
+            w = (row_norm + 1e-9) ** (1.0 - p_k / 2.0) * (1.0 + m_k * rn)
 
             AW = A.unsqueeze(0) * w.unsqueeze(1).to(torch.complex128)   # [B, N, G]
             gram = torch.einsum("bng,bmg->bnm", AW, AW.conj())    # [B, N, N]

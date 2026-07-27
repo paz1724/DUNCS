@@ -23,7 +23,7 @@ model:
   model_type: "SubspaceNet"               # Model-based deep-learning baseline (parent of SparseNet); CNN -> surrogate covariance -> differentiable subspace
   model_params:
     tau: 7                                # Number of auto-correlation lags (must be < T=8)
-    diff_method: "esprit"                 # Differentiable subspace readout: "esprit" / "root_music" / "music_1D"
+    diff_method: "music_1D"               # Differentiable subspace readout: "esprit" / "root_music" / "music_1D"
     eigen_regularization_weight: 1.0      # Weight on the source-count (model-order) loss. 0 = counter UNTRAINED (≈chance); >0 trains it.
 
 
@@ -53,14 +53,14 @@ evaluation:
   admm_iterations: [20, 500]
   models:
   augmented_methods: []
-  subspace_methods: ["esprit"]
+  subspace_methods: ["music"]           # classical subspace baseline evaluated alongside the model
 
 
 commands:
   create_data: true
   save_dataset: false
-  train_model: true
-  save_model: false
+  train_model: false                      # false = skip training, load saved weights from weights/final_models
+  save_model: true                        # persist trained weights to weights/final_models (for the no-train path)
   evaluate_mode: true
   plot_results: true
   save_plots: true

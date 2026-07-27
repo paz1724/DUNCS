@@ -14,7 +14,7 @@ from src.training import TrainingParams, train
 from src.evaluation import evaluate
 from src.data_handler import create_dataset, load_datasets, SameLengthBatchSampler, collate_fn
 from src.training import set_criterions
-from src.utils import print_loss_results_from_simulation
+from src.utils import print_loss_results_from_simulation, device
 from src.steering_vector_generator import SteeringVectorGenerator
 
 
@@ -85,6 +85,24 @@ class SimulationRunner:
                        self.paths["saving"] / "final_models" / model.get_model_file_name())
 
         return model
+
+    def load_saved_model(self, model_gen):
+        """Load previously saved weights for an evaluation-only run (train_model: false).
+
+        Args:
+            model_gen (ModelGenerator): Factory holding the instantiated (untrained) model.
+
+        Returns:
+            nn.Module: The model with saved weights loaded.
+        """
+        weights_path = self.paths["saving"] / "final_models" / model_gen.model.get_model_file_name()
+        if not weights_path.exists():
+            raise FileNotFoundError(
+                f"train_model is off but no saved weights were found at:\n  {weights_path}\n"
+                f"Train once with commands.save_model: true, or copy the matching weights file there.")
+        print(f"Loading saved weights (no training): {weights_path}")
+        model = model_gen.load_model(state_dict_path=weights_path)
+        return model.to(device).eval()
 
     def evaluate_model(self, model, system_model, test_dataset):
         """Evaluate a trained model plus configured baselines on the test set.
@@ -213,6 +231,8 @@ class SimulationRunner:
         if config.commands.train_model:
             train_dataset.materialize(config.system_model)
             model = self.train_model(model_gen, train_dataset)
+        elif config.commands.evaluate_mode:
+            model = self.load_saved_model(model_gen)
 
         result = None
         if config.commands.evaluate_mode:

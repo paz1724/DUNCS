@@ -749,8 +749,21 @@ class MVDR(MUSIC):
             load = 1e-3 * eye
         Rinv = torch.linalg.solve(R + load, eye.expand(R.shape[0], N, N))          # [B,N,N]
         A = self.search_grid.to(torch.complex128).to(R.device)                    # [N,G]
-        tmp = torch.einsum("bnm,mg->bng", Rinv, A)                                # [B,N,G]
-        denom = torch.einsum("ng,bng->bg", A.conj(), tmp).real                    # [B,G] = aᴴR⁻¹a
+        Aeff = A
+        if getattr(self, "esb", False) and M >= 2:
+            # Eigenspace-projected (ESB) Capon: under CORRELATED multipath the plain Capon weight
+            # self-cancels the signal (the classic coherent-Capon failure -- sim reuse 34% vs MUSIC's
+            # 9% on the SAME covariance). Projecting the steering onto the top-M signal subspace
+            # before the inversion restores robustness while staying a beamformer readout.
+            w_eig, V = torch.linalg.eigh(R)                                       # ascending
+            Es = V[:, :, -M:]                                                     # [B,N,M]
+            Ps = Es @ Es.conj().transpose(-2, -1)                                 # [B,N,N]
+            Aeff = torch.einsum("bnm,mg->bng", Ps, A)                             # projected steering
+            tmp = torch.einsum("bnm,bmg->bng", Rinv, Aeff)
+            denom = torch.einsum("bng,bng->bg", Aeff.conj(), tmp).real
+        else:
+            tmp = torch.einsum("bnm,mg->bng", Rinv, A)                            # [B,N,G]
+            denom = torch.einsum("ng,bng->bg", A.conj(), tmp).real                # [B,G] = aᴴR⁻¹a
         self.music_spectrum = 1.0 / (denom + 1e-9)                                # Capon spectrum
         if getattr(self, "sic", False) and M >= 2:
             # Sequential cancellation (CLEAN/SIC): Capon's beamwidth merges close pairs into one

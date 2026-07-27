@@ -25,6 +25,7 @@ from src.models_pack.sparse_cov_admm_unfold import DUNCS
 from src.models_pack.du_mfocuss import DUMFOCUSS
 from src.models_pack.doa_former import DoAFormer
 from src.models_pack.mfocuss import MFOCUSS
+from src.models_pack.spice import SPICE
 from src.config.simulation_config import SystemModelParams
 from src.utils import device
 
@@ -148,6 +149,8 @@ class ModelGenerator(object):
             self.__set_du_mfocuss()
         elif self.model_type.startswith("MFOCUSS"):
             self.__set_mfocuss()
+        elif self.model_type.startswith("SPICE"):
+            self.__set_spice()
         elif self.model_type.startswith("DoAFormer"):
             self.__set_doa_former()
         else:
@@ -221,6 +224,10 @@ class ModelGenerator(object):
     def __set_mfocuss(self):
         """Instantiates a classical MFOCUSS baseline from the current params into self.model."""
         self.model = MFOCUSS(system_model=self.system_model, **self.model_params)
+
+    def __set_spice(self):
+        """Instantiates a SPICE (covariance-matching) baseline from the current params into self.model."""
+        self.model = SPICE(system_model=self.system_model, **self.model_params)
 
     def __set_doa_former(self):
         """Instantiates a DoAFormer model from the current params into self.model."""
