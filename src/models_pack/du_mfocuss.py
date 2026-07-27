@@ -187,7 +187,7 @@ class DUMFOCUSS(ParentModel):
             # countering FOCUSS's over-shrinkage of large coefficients (the minimax-concave idea:
             # taper the penalty as a coefficient grows). m_k~0 at init -> factor ~1 -> classical FOCUSS.
             rn = row_norm / (row_norm.amax(dim=1, keepdim=True) + 1e-9)   # [B, G] relative magnitude
-            w = (row_norm + 1e-9) ** (1.0 - p_k / 2.0) * (1.0 + m_k * rn)
+            w = (row_norm + 1e-12) ** (1.0 - p_k / 2.0) * (1.0 + m_k * rn)   # floor matches MFOCUSS (was 1e-9: kept dying atoms ~1000x more alive)
 
             AW = A.unsqueeze(0) * w.unsqueeze(1).to(torch.complex128)   # [B, N, G]
             gram = torch.einsum("bng,bmg->bnm", AW, AW.conj())    # [B, N, N]
