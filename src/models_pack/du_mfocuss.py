@@ -219,6 +219,12 @@ class DUMFOCUSS(ParentModel):
         half = max(1, int(0.025 * G))           # local soft-argmax window (~sub-min_gap)
         supp = max(half, int(0.03 * G))         # suppression radius to separate sources
         temp = F.softplus(self._raw_temp) + 1e-3
+        if self.training:
+            # TRAIN-time temperature floor: at temp~0.05 the window softmax over the normalized
+            # spectrum saturates (d(angle)/d(spectrum) ~ 0), so the RMSPE term supplied NO gradient
+            # to (lambda_k, p_k, m_k). A 0.3 floor during training keeps the readout informative;
+            # EVAL keeps the learned sharp temperature (readout accuracy unchanged).
+            temp = torch.clamp(temp, min=0.3)
         grid_idx = torch.arange(G, device=spectrum.device)
         offsets = torch.arange(-half, half + 1, device=spectrum.device)
         # Greedy peak picking on a detached copy: take the argmax, suppress its
@@ -302,6 +308,12 @@ class DUMFOCUSS(ParentModel):
         row is -inf (weights summed to exact 1/2 or 1/3 on healthy inputs).
         """
         temp = F.softplus(self._raw_temp) + 1e-3
+        if self.training:
+            # TRAIN-time temperature floor: at temp~0.05 the window softmax over the normalized
+            # spectrum saturates (d(angle)/d(spectrum) ~ 0), so the RMSPE term supplied NO gradient
+            # to (lambda_k, p_k, m_k). A 0.3 floor during training keeps the readout informative;
+            # EVAL keeps the learned sharp temperature (readout accuracy unchanged).
+            temp = torch.clamp(temp, min=0.3)
         grid = self.grid_fine                                                     # [Gf]
         Gf = grid.numel()
         step = float(grid[1] - grid[0])
