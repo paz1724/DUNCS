@@ -116,6 +116,11 @@ class DUMFOCUSS(ParentModel):
         # (init softplus(-3)+1e-3 ~= 0.05, matching the MFOCUSS peak picker).
         self._raw_temp = nn.Parameter(torch.tensor(-3.0))
         self.spectrum_loss_weight = 0.5     # dense heat-map aux loss (see training_step)
+        self.spectrum_loss_mode = "bce"     # "bce" = Gaussian heat-map BCE; "conv" = convolutional
+                                            # window matching: smooth BOTH spectrum and GT spikes with a
+                                            # triangular kernel and L2-match — an angle offset between
+                                            # peaks becomes an INTEGRAL of power difference (kernel
+                                            # overlap), giving wide-basin, fully derivable gradients
         self._last_spectrum = None
 
     def get_model_params(self):
@@ -368,8 +373,23 @@ class DUMFOCUSS(ParentModel):
             for j in range(angles.shape[1]):
                 d = grid[None, :] - angles[:, j:j + 1].to(spec.device)
                 tgt = torch.maximum(tgt, torch.exp(-0.5 * (d / sig) ** 2))
-            loss = loss + self.spectrum_loss_weight * F.binary_cross_entropy(
-                spec.clamp(1e-6, 1 - 1e-6), tgt.to(spec.dtype)) * x.shape[0]
+            if getattr(self, "spectrum_loss_mode", "bce") == "conv":
+                # Convolutional window matching (user-proposed): K * S vs K * T with a triangular
+                # window (~8 deg wide). Peak-position error -> overlapping-area difference, so the
+                # gradient is informative even when predicted and true peaks do not overlap pointwise.
+                step = float(grid[1] - grid[0])
+                kh = max(2, int(round(np.deg2rad(4.0) / step)))
+                ker = 1.0 - torch.arange(-kh, kh + 1, device=spec.device, dtype=spec.dtype).abs() / (kh + 1)
+                ker = (ker / ker.sum()).view(1, 1, -1)
+                tgt_d = torch.zeros_like(spec)
+                idx = torch.argmin((grid[None, None, :] - angles.to(spec.device)[:, :, None]).abs(), dim=2)
+                tgt_d.scatter_(1, idx, 1.0)
+                Ss = F.conv1d(spec.unsqueeze(1), ker, padding=kh).squeeze(1)
+                Ts = F.conv1d(tgt_d.unsqueeze(1), ker, padding=kh).squeeze(1)
+                loss = loss + self.spectrum_loss_weight * ((Ss - Ts) ** 2).sum(dim=1).mean() * x.shape[0]
+            else:
+                loss = loss + self.spectrum_loss_weight * F.binary_cross_entropy(
+                    spec.clamp(1e-6, 1 - 1e-6), tgt.to(spec.dtype)) * x.shape[0]
         acc = self._count_accuracy(sources_num, source_estimation)
         return loss, acc, None
 
