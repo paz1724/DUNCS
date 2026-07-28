@@ -115,6 +115,8 @@ class DUMFOCUSS(ParentModel):
         # Readout temperature for the differentiable local soft-argmax peak picker
         # (init softplus(-3)+1e-3 ~= 0.05, matching the MFOCUSS peak picker).
         self._raw_temp = nn.Parameter(torch.tensor(-3.0))
+        self.spectrum_loss_weight = 0.5     # dense heat-map aux loss (see training_step)
+        self._last_spectrum = None
 
     def get_model_params(self):
         """Returns a short string summarizing the model's hyper-parameters.
@@ -199,6 +201,7 @@ class DUMFOCUSS(ParentModel):
 
         spectrum = torch.linalg.norm(s, dim=2)                    # [B, G] real power
         spectrum = spectrum / (spectrum.amax(dim=1, keepdim=True) + 1e-9)
+        self._last_spectrum = spectrum                            # for the training aux loss
         return spectrum
 
     def _soft_argmax(self, spectrum: torch.Tensor, source_number: int) -> torch.Tensor:
@@ -340,6 +343,21 @@ class DUMFOCUSS(ParentModel):
         x, sources_num, angles = self._prepare_batch(batch)
         doa_prediction, source_estimation, _ = self(x, sources_num)
         loss = self.criterion(doa_prediction, angles)
+        # Dense spectrum heat-map auxiliary loss: the soft-argmax readout's window softmax is
+        # SATURATED at the reduce-to-MFOCUSS init (measured total grad norm ~5e-15 — literally no
+        # training signal; the flat loss curve). Supervising the normalized spectrum toward a
+        # Gaussian bump at each GT angle gives dense, informative gradients to (lambda_k, p_k, m_k)
+        # and the hyper net — sharpening peak contrast, which is exactly what detection needs.
+        spec = getattr(self, "_last_spectrum", None)
+        if self.training and spec is not None:
+            grid = (self._grid_use if self._grid_use is not None else self.grid).to(spec.device)
+            sig = np.deg2rad(1.0)
+            tgt = torch.zeros_like(spec)
+            for j in range(angles.shape[1]):
+                d = grid[None, :] - angles[:, j:j + 1].to(spec.device)
+                tgt = torch.maximum(tgt, torch.exp(-0.5 * (d / sig) ** 2))
+            loss = loss + self.spectrum_loss_weight * F.binary_cross_entropy(
+                spec.clamp(1e-6, 1 - 1e-6), tgt.to(spec.dtype)) * x.shape[0]
         acc = self._count_accuracy(sources_num, source_estimation)
         return loss, acc, None
 

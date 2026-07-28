@@ -386,7 +386,13 @@ class MUSIC(SubspaceMethod):
             cell_idx = cell_idx.reshape(batch_size, -1, 1)
             metrix_thr = torch.gather(self.music_spectrum.unsqueeze(-1).expand(-1, -1, cell_idx.size(-1)), 1,
                                       cell_idx).requires_grad_(True)
-            soft_max = torch.softmax(metrix_thr, dim=1)
+            # Scale-invariant tempered softmax: softmax over RAW spectrum values is scale-sensitive —
+            # MUSIC's huge peaks saturate it (fine), but MVDR's small Capon values (range ~[0.02, 1])
+            # make it near-UNIFORM, so the soft angle barely depends on the covariance and the readout
+            # provides no training signal (the flat MVDR loss curve). Normalizing each window to its
+            # max and applying temp=0.05 makes the readout scale-free and informative for both.
+            metrix_thr = metrix_thr / metrix_thr.amax(dim=1, keepdim=True).clamp_min(1e-30)
+            soft_max = torch.softmax(metrix_thr / 0.05, dim=1)
             soft_decision[:, source][:, None] = torch.einsum("bms, bms -> bs", search_space[cell_idx], soft_max).to(
                 device)
 
