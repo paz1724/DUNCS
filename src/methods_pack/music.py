@@ -18,16 +18,23 @@ class MUSIC(SubspaceMethod):
     For Near field - "angle", "range" and "angle, range" are the possible options.
     """
 
-    def __init__(self, system_model: SystemModel, estimation_parameter: str):
+    def __init__(self, system_model: SystemModel, estimation_parameter: str,
+                 maskpeak_temp: float = 0.05, maskpeak_norm_eps: float = 1e-30):
         """Initialize the MUSIC estimator, build the search grid and smoothing cells.
 
         Args:
             system_model (SystemModel): Array geometry and field-type configuration.
             estimation_parameter (str): What to estimate; one of "angle", "range",
                 or "angle, range".
+            maskpeak_temp (float): Softmax temperature of the maskpeak soft-decision
+                readout (default reproduces the historical 0.05 literal).
+            maskpeak_norm_eps (float): Clamp floor for the per-window max
+                normalization of the maskpeak readout (historical 1e-30 literal).
         """
         super().__init__(system_model)
         self.estimation_params = estimation_parameter
+        self.maskpeak_temp = maskpeak_temp
+        self.maskpeak_norm_eps = maskpeak_norm_eps
         self.angels = None
         self.distances = None
         self.search_grid = None
@@ -391,8 +398,8 @@ class MUSIC(SubspaceMethod):
             # make it near-UNIFORM, so the soft angle barely depends on the covariance and the readout
             # provides no training signal (the flat MVDR loss curve). Normalizing each window to its
             # max and applying temp=0.05 makes the readout scale-free and informative for both.
-            metrix_thr = metrix_thr / metrix_thr.amax(dim=1, keepdim=True).clamp_min(1e-30)
-            soft_max = torch.softmax(metrix_thr / 0.05, dim=1)
+            metrix_thr = metrix_thr / metrix_thr.amax(dim=1, keepdim=True).clamp_min(self.maskpeak_norm_eps)
+            soft_max = torch.softmax(metrix_thr / self.maskpeak_temp, dim=1)
             soft_decision[:, source][:, None] = torch.einsum("bms, bms -> bs", search_space[cell_idx], soft_max).to(
                 device)
 
@@ -738,6 +745,28 @@ class MVDR(MUSIC):
     can serve as a SubspaceNet readout trained end-to-end on the learned covariance.
     """
 
+    def __init__(self, system_model: SystemModel, estimation_parameter: str,
+                 abs_loading: float = 1e-3, spectrum_eps: float = 1e-9,
+                 sic_loading: float = 1e-3, sic_guard_deg: float = 6.0):
+        """Initialize the MVDR readout (hoisted numeric defaults == historical literals).
+
+        Args:
+            system_model (SystemModel): Array geometry and field-type configuration.
+            estimation_parameter (str): What to estimate (see MUSIC).
+            abs_loading (float): Legacy absolute diagonal loading used when
+                rel_loading is not set.
+            spectrum_eps (float): Epsilon added to the Capon spectrum denominator.
+            sic_loading (float): Relative diagonal loading of the deflated
+                covariance in the SIC (sequential cancellation) branch.
+            sic_guard_deg (float): SIC guard half-width (deg) masking source 1
+                out of the second pick.
+        """
+        super().__init__(system_model, estimation_parameter)
+        self.abs_loading = abs_loading
+        self.spectrum_eps = spectrum_eps
+        self.sic_loading = sic_loading
+        self.sic_guard_deg = sic_guard_deg
+
     def forward(self, cov: torch.Tensor, number_of_sources: int, known_angles=None,
                 known_distances=None, is_soft: bool = True):
         M = number_of_sources
@@ -745,14 +774,14 @@ class MVDR(MUSIC):
         N = R.shape[-1]
         eye = torch.eye(N, dtype=torch.complex128, device=R.device)
         # Diagonal loading: rel_loading (if set) scales with the covariance power (trace/N) --
-        # the principled form; None keeps the legacy absolute 1e-3 (which over-loads small-scale
-        # learned covariances -> blurred Capon spectrum -> merged close pairs).
+        # the principled form; None keeps the legacy absolute abs_loading (which over-loads
+        # small-scale learned covariances -> blurred Capon spectrum -> merged close pairs).
         rel = getattr(self, "rel_loading", None)
         if rel is not None:
             pwr = torch.diagonal(R, dim1=-2, dim2=-1).real.mean(-1).clamp_min(1e-30)   # [B]
             load = (rel * pwr)[:, None, None] * eye
         else:
-            load = 1e-3 * eye
+            load = self.abs_loading * eye
         Rinv = torch.linalg.solve(R + load, eye.expand(R.shape[0], N, N))          # [B,N,N]
         A = self.search_grid.to(torch.complex128).to(R.device)                    # [N,G]
         Aeff = A
@@ -770,7 +799,7 @@ class MVDR(MUSIC):
         else:
             tmp = torch.einsum("bnm,mg->bng", Rinv, A)                            # [B,N,G]
             denom = torch.einsum("ng,bng->bg", A.conj(), tmp).real                # [B,G] = aᴴR⁻¹a
-        self.music_spectrum = 1.0 / (denom + 1e-9)                                # Capon spectrum
+        self.music_spectrum = 1.0 / (denom + self.spectrum_eps)                   # Capon spectrum
         if getattr(self, "sic", False) and M >= 2:
             # Sequential cancellation (CLEAN/SIC): Capon's beamwidth merges close pairs into one
             # peak, so the second source is missed. Find the strongest source, project it OUT of
@@ -782,10 +811,11 @@ class MVDR(MUSIC):
             P = eye[None] - torch.einsum("bn,bm->bnm", a1, a1.conj()) / nrm[..., None].to(torch.complex128)
             R2 = P @ R @ P.conj().transpose(-2, -1)
             pwr2 = torch.diagonal(R2, dim1=-2, dim2=-1).real.mean(-1).clamp_min(1e-30)
-            Rinv2 = torch.linalg.solve(R2 + (1e-3 * pwr2)[:, None, None] * eye, eye.expand(R.shape[0], N, N))
+            Rinv2 = torch.linalg.solve(R2 + (self.sic_loading * pwr2)[:, None, None] * eye,
+                                       eye.expand(R.shape[0], N, N))
             den2 = torch.einsum("ng,bng->bg", A.conj(), torch.einsum("bnm,mg->bng", Rinv2, A)).real
-            spec2 = 1.0 / (den2 + 1e-9)
-            guard = (self.angels[None, :] - th1).abs() < np.deg2rad(getattr(self, "sic_guard_deg", 6.0))
+            spec2 = 1.0 / (den2 + self.spectrum_eps)
+            guard = (self.angels[None, :] - th1).abs() < np.deg2rad(self.sic_guard_deg)
             self.music_spectrum = spec2.masked_fill(guard, 0.0)                    # keep source 1 out of pick 2
             th2 = self.peak_finder(1)                                              # [B,1] second source
             params = torch.sort(torch.cat([th1, th2], dim=1), dim=1).values

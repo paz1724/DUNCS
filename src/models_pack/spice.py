@@ -28,7 +28,16 @@ class SPICE(ParentModel):
     """Covariance-matching (SPICE) DoA baseline — no NN, no training, no hyperparameters."""
 
     def __init__(self, system_model: SystemModel, num_iterations: int = 30,
-                 grid_size: int = 121, criterion: str = "rmspe", grid_range_deg=None):
+                 grid_size: int = 121, criterion: str = "rmspe", grid_range_deg=None,
+                 coarse_cols_per_180deg: int = 361,
+                 loading_factor: float = 1e-6,
+                 mf_eps: float = 1e-30,
+                 p_floor: float = 1e-14,
+                 spectrum_norm_eps: float = 1e-30,
+                 pick_temp: float = 0.05,
+                 pick_min_cols: int = 1,
+                 eval_chunk: int = 256,
+                 count_peak_thr: float = 0.5):
         """Initializes the SPICE baseline.
 
         Args:
@@ -38,6 +47,10 @@ class SPICE(ParentModel):
                 coarse (<=361 cols), mirroring the MFOCUSS/DU source-adaptive grid.
             criterion (str): Evaluation criterion name.
             grid_range_deg (float | [lo, hi]): Optional grid azimuth range override.
+
+        The remaining keyword args are hoisted numeric tunables / thresholds /
+        epsilons; their defaults reproduce the historical hard-coded values
+        exactly (see the constants block below for what each one controls).
         """
         super().__init__(system_model, criterion)
         self.criterion = set_criterions(criterion.lower())[0]
@@ -45,13 +58,24 @@ class SPICE(ParentModel):
         self.grid_size = grid_size
         self.M = system_model.params.M
 
+        # ---- Hoisted tunables / epsilons (defaults == historical literals) ----
+        self.coarse_cols_per_180deg = coarse_cols_per_180deg  # coarse (M>=2) grid density cap (cols per 180 deg)
+        self.loading_factor = loading_factor        # relative diagonal (conditioning) load on R
+        self.mf_eps = mf_eps                        # matched-filter / IAA denominator clamp epsilon
+        self.p_floor = p_floor                      # power-spectrum clamp floor
+        self.spectrum_norm_eps = spectrum_norm_eps  # spectrum max-normalization epsilon
+        self.pick_temp = pick_temp                  # peak-pick local softmax temperature
+        self.pick_min_cols = pick_min_cols          # minimum peak-pick window half-width (columns)
+        self.eval_chunk = eval_chunk                # spectrum pass chunk size (memory bound)
+        self.count_peak_thr = count_peak_thr        # source-count local-max significance threshold
+
         if grid_range_deg is None:
             lo, hi = system_model.params.doa_range
         elif np.isscalar(grid_range_deg):
             lo, hi = -float(grid_range_deg), float(grid_range_deg)
         else:
             lo, hi = float(grid_range_deg[0]), float(grid_range_deg[1])
-        gm = min(int(grid_size), int(round(361 * abs(hi - lo) / 180.0)))
+        gm = min(int(grid_size), int(round(self.coarse_cols_per_180deg * abs(hi - lo) / 180.0)))
         grid_rad = np.deg2rad(np.linspace(lo, hi, gm))
         A = np.asarray(system_model.steering_vec(grid_rad))      # (N, Gm) coarse (M>=2)
         self.register_buffer("grid", torch.as_tensor(grid_rad, dtype=torch.float64))
@@ -79,28 +103,28 @@ class SPICE(ParentModel):
         B, N, T = Y.shape
         A = self._A_use if self._A_use is not None else self.A    # [N, G]
         Rh = torch.einsum("bnt,bmt->bnm", Y, Y.conj()) / T        # sample covariance [B, N, N]
-        pwr = torch.diagonal(Rh, dim1=-2, dim2=-1).real.mean(-1).clamp_min(1e-30)   # [B]
+        pwr = torch.diagonal(Rh, dim1=-2, dim2=-1).real.mean(-1).clamp_min(self.mf_eps)   # [B]
         eye = torch.eye(N, dtype=torch.complex128, device=Y.device)
         # init: matched-filter (periodogram) powers
-        anorm2 = (A.conj() * A).sum(dim=0).real.clamp_min(1e-30)                    # [G]
+        anorm2 = (A.conj() * A).sum(dim=0).real.clamp_min(self.mf_eps)                    # [G]
         p = (torch.einsum("bnt,ng->bgt", Y, A.conj()).abs() ** 2).mean(dim=2) / anorm2 ** 2   # [B, G]
-        p = p.clamp_min(1e-14)
+        p = p.clamp_min(self.p_floor)
         for _ in range(self.num_iter):
             R = torch.einsum("ng,bg,mg->bnm", A, p.to(torch.complex128), A.conj())
-            R = R + (1e-6 * pwr)[:, None, None] * eye                                # conditioning load
+            R = R + (self.loading_factor * pwr)[:, None, None] * eye                     # conditioning load
             RiY = torch.linalg.solve(R, Y)                                           # [B, N, T]
             RiA = torch.linalg.solve(R, A.unsqueeze(0).expand(B, -1, -1))            # [B, N, G]
-            denom = torch.einsum("ng,bng->bg", A.conj(), RiA).real.clamp_min(1e-30)  # a^H R^-1 a
+            denom = torch.einsum("ng,bng->bg", A.conj(), RiA).real.clamp_min(self.mf_eps)  # a^H R^-1 a
             num = (torch.einsum("ng,bnt->bgt", A.conj(), RiY).abs() ** 2).mean(dim=2)  # mean_t |a^H R^-1 y|^2
-            p = (num / denom ** 2).clamp_min(1e-14)
+            p = (num / denom ** 2).clamp_min(self.p_floor)
         spectrum = p
-        return spectrum / (spectrum.amax(dim=1, keepdim=True) + 1e-30)
+        return spectrum / (spectrum.amax(dim=1, keepdim=True) + self.spectrum_norm_eps)
 
     def _pick(self, spectrum: torch.Tensor, source_number: int) -> torch.Tensor:
         """Greedy multi-peak picker with local soft refinement (mirrors MFOCUSS)."""
         B, G = spectrum.shape
         grid = self._grid_use if self._grid_use is not None else self.grid
-        half = max(1, int(getattr(self, "pick_half_frac", 0.025) * G))
+        half = max(self.pick_min_cols, int(getattr(self, "pick_half_frac", 0.025) * G))
         supp = max(half, int(getattr(self, "pick_supp_frac", 0.03) * G))
         grid_idx = torch.arange(G, device=spectrum.device)
         offsets = torch.arange(-half, half + 1, device=spectrum.device)
@@ -124,14 +148,13 @@ class SPICE(ParentModel):
             win = (idx.unsqueeze(1) + offsets).clamp(0, G - 1)
             vals = torch.gather(spectrum, 1, win)
             ang = grid[win]
-            w = torch.softmax(vals / 0.05, dim=1)
+            w = torch.softmax(vals / self.pick_temp, dim=1)
             out[:, j] = (w * ang).sum(dim=1)
         return out
 
-    @staticmethod
-    def _estimate_count(spectrum: torch.Tensor) -> torch.Tensor:
+    def _estimate_count(self, spectrum: torch.Tensor) -> torch.Tensor:
         c = spectrum[:, 1:-1]
-        peaks = (c > spectrum[:, :-2]) & (c >= spectrum[:, 2:]) & (c > 0.5)
+        peaks = (c > spectrum[:, :-2]) & (c >= spectrum[:, 2:]) & (c > self.count_peak_thr)
         return peaks.sum(dim=1).clamp(min=1).float()
 
     def forward(self, x: torch.Tensor, sources_num: int = None, phase: str = "test"):
@@ -142,7 +165,8 @@ class SPICE(ParentModel):
         # (coarse pairs measured 26-28% MD vs fine-grid pairs far lower).
         self._A_use = self.A_fine
         self._grid_use = self.grid_fine
-        spectrum = torch.cat([self._spectrum(x[i:i + 256]) for i in range(0, x.shape[0], 256)])
+        spectrum = torch.cat([self._spectrum(x[i:i + self.eval_chunk])
+                              for i in range(0, x.shape[0], self.eval_chunk)])
         doa = self._pick(spectrum, src)
         return doa, self._estimate_count(spectrum), None
 
