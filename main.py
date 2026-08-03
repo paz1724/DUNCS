@@ -19,11 +19,13 @@ if __name__ == "__main__":
             config_path = "src/config/sparseNet.yaml"
         case "dumfocuss":
             config_path = "src/config/duMfocuss.yaml"
+        case "mfocuss":
+            config_path = "src/config/mfocuss.yaml"
         case "doaformer":
             config_path = "src/config/doaFormer.yaml"
         case _:
             print(f"Unknown configuration: {config_name}")
-            print("Available options: 'duncs', 'subspacenet', 'sparsenet', 'dumfocuss', 'doaformer'")
+            print("Available options: 'duncs', 'subspacenet', 'sparsenet', 'dumfocuss', 'mfocuss', 'doaformer'")
             sys.exit(1)
     
     print(f"Loading configuration: {config_path}")

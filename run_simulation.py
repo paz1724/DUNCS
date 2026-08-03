@@ -95,6 +95,10 @@ class SimulationRunner:
         Returns:
             nn.Module: The model with saved weights loaded.
         """
+        if not any(p.requires_grad for p in model_gen.model.parameters()):
+            # Classical (weights-free) model, e.g. MFOCUSS/SPICE: nothing to load.
+            print(f"{model_gen.model._get_name()}: classical model, no weights to load.")
+            return model_gen.model.to(device).eval()
         weights_path = self.paths["saving"] / "final_models" / model_gen.model.get_model_file_name()
         if not weights_path.exists():
             raise FileNotFoundError(
