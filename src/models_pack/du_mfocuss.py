@@ -36,7 +36,7 @@ class DUMFOCUSS(ParentModel):
                  p_init_clamp_eps: float = 1e-3,
                  lam_init: float = 0.99,
                  lam_eps: float = 1e-5,
-                 mcp_raw_init: float = -16.0,
+                 mcp_raw_init: float = -3.0,
                  temp_raw_init: float = -3.0,
                  temp_eps: float = 1e-3,
                  train_temp_floor: float = 0.3,
@@ -172,8 +172,9 @@ class DUMFOCUSS(ParentModel):
         # MCP (minimax concave penalty) per-layer de-bias strength m_k = softplus(raw_mcp_k) >= 0.
         # The MCP term reduces FOCUSS's over-shrinkage of already-strong atoms by boosting their
         # reweight in proportion to the PREVIOUS iterate's relative magnitude (see the loop below).
-        # Initialized at raw=-16 -> m_k ~= 1e-7 ~= 0, so at init the reweight is the plain FOCUSS
-        # weight and the reduce-to-MFOCUSS equivalence is preserved (verified to <1e-6).
+        # Initialized at raw=-3 -> m_k ~= 0.05 (a <=5% de-bias at init): near-exact reduce-to-MFOCUSS,
+        # but with a LIVE gradient (softplus'(-3)~0.05; the earlier -16 init had softplus'~1e-7 -> the
+        # MCP was permanently frozen at 1e-7 and training could never wake it).
         self._raw_mcp = nn.Parameter(torch.full((num_iterations,), self.mcp_raw_init))
         # INPUT-ADAPTIVE hyper-parameters: per-layer corrections to (raw_lambda_k, raw_p_k, raw_mcp_k)
         # computed from the PREVIOUS iterate's state — [log residual ratio, row-sparsity ratio].
