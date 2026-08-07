@@ -1304,7 +1304,7 @@ def add_flatloss_fix_slide():
         "SubspaceNet-MVDR: the shared maskpeak readout applies softmax to RAW spectrum values — scale-sensitive. MUSIC's peaks span [1, 124] (softmax saturates ≈ hard argmax, trains fine); MVDR's Capon spectrum spans [0.02, 1.0] → the softmax is near-UNIFORM, the soft angle barely depends on the covariance, so the CNN gets no usable signal.",
         "FIX (music.py maskpeak): per-window max-normalize + temperature 0.05 → the readout is scale-invariant and informative for every spectrum readout (MUSIC unchanged in behavior, MVDR now trainable).",
         "Third flaw (found by inspecting the first 'after' curve): MVDR trained to 0.08 then EXPLODED at epoch ~32 (gradient spike through the Capon inversion) and the final — not best — weights were kept. Fixed with grad-clipping (norm 1.0) + best-validation checkpoint restore.",
-        "Outcome: retrained MVDR beat its old row on ALL 8 cells (reuse MD 19→8%, reuse≥25° 14→3%, multipath 32→17%) and was persisted — much of the 'Capon pair bound' was a TRAINING artifact, not physics. DU-MFOCUSS: after the train-temp-floor fix its row was persisted too — EVERY cell improved (reuse MD 4.8→2.8%, multipath 9.3→6.1%, multipath≥25° 5.8→3.5%) and it now BEATS classical MFOCUSS on all four synthetic pair columns.",
+        "Outcome: retrained MVDR beat its old row on ALL 8 cells (reuse MD 19→8%, reuse≥25° 14→3%, multipath 32→17%) and was persisted — much of the 'Capon pair bound' was a TRAINING artifact, not physics. DU-MFOCUSS: with the temp-floor + a WAKEABLE MCP init (the raw=−16 init froze m_k at 1e-7 — softplus gradient 1e-7 — so the MCP could never train; now raw=−3, trained m_k≈0.03–0.04) its reproducible row BEATS MFOCUSS on all four synthetic pair columns and real reuse (e.g. 2.3/4 vs 2.5/4, multipath 2.9/7 vs 3.3/9). The post-ep-60 val rise = constant aux-loss domination; annealing removes it, but best-checkpointing harvests a better model — recipe of record.",
     ], size=8.2, gap=0.015)
     return sl
 
@@ -1320,7 +1320,7 @@ def add_final_loss_slide():
     _add_text(sl, 0.5, 6.18, 12.3, 0.26, "Where each model ends", size=10.5, bold=True, color=THEMES["Final"][1])
     bullets(sl, 0.55, 6.46, 12.3, 0.8, [
         "DoAFormer converges lowest (~0.027 rad) — the transformer learns the recorded manifold end-to-end.",
-        "DU-MFOCUSS (fixed): now genuinely descends — the last flaw was the RMSPE gradient still being ZERO through its own saturated soft-argmax; a train-time temperature floor (0.3) restored it (eval readout unchanged).",
+        "DU-MFOCUSS (fixed): genuinely descends to best-val 0.033 (best-checkpoint marked) — fixes: train-temp floor restored the RMSPE gradient, the MCP init was unfrozen (−16→−3; trained m_k≈0.03–0.04), and the late flattening is the aux loss handing over to RMSPE.",
         "SubspaceNet-MUSIC ~0.041 and RootMUSIC ~0.077 — healthy descents, unchanged by the fixes.",
         "SubspaceNet-MVDR (fixed): 0.19 flat → stable descent to 0.098 best-val — grad-clip + best-checkpoint hold the gain; its table row improved on all 8 cells.",
     ], size=8.4, gap=0.02)
