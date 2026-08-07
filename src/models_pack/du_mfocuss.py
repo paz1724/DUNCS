@@ -27,6 +27,8 @@ class DUMFOCUSS(ParentModel):
     def __init__(self, system_model: SystemModel, num_iterations: int = 10,
                  grid_size: int = 121, criterion: str = "rmspe",
                  grid_range_deg: float = None,
+                 learn_calibration: bool = False,   # trainable N×N dictionary calibration C (init=I,
+                 cal_reg_weight: float = 1e-3,       # so reduce-to-MFOCUSS holds); ||C-I||_F^2 kept small
                  lam_multi_scale: float = 0.02,
                  peak_lim_deg: float = None,
                  fine_cols_per_180deg: int = 901,
@@ -194,6 +196,15 @@ class DUMFOCUSS(ParentModel):
                                             # peaks becomes an INTEGRAL of power difference (kernel
                                             # overlap), giving wide-basin, fully derivable gradients
         self._last_spectrum = None
+        # Learnable dictionary calibration: A_cal = C @ A with C = _cal_re + j*_cal_im, init C = I_N.
+        # Registered ONLY when enabled, so the default model's state_dict is byte-identical (old
+        # weights strict-load). At init C = I -> A unchanged -> reduce-to-MFOCUSS preserved; a trained
+        # C corrects the effective dictionary geometry (the trainable analog of DU-MFOCUSS-cal).
+        self.learn_calibration = bool(learn_calibration)
+        self.cal_reg_weight = cal_reg_weight
+        if self.learn_calibration:
+            self._cal_re = nn.Parameter(torch.eye(system_model.params.N))
+            self._cal_im = nn.Parameter(torch.zeros(system_model.params.N, system_model.params.N))
 
     def get_model_params(self):
         """Returns a short string summarizing the model's hyper-parameters.
@@ -214,6 +225,9 @@ class DUMFOCUSS(ParentModel):
         """
         Y = x.to(torch.complex128)                                # [B, N, T]
         A = self._A_use if self._A_use is not None else self.A    # [N, G] source-adaptive
+        if getattr(self, "learn_calibration", False):
+            C = (self._cal_re + 1j * self._cal_im).to(A.dtype).to(A.device)   # [N,N], init I
+            A = C @ A                                                          # calibrated dictionary
         B = Y.shape[0]
         eye = torch.eye(A.shape[0], dtype=torch.complex128, device=Y.device)
 
@@ -462,6 +476,10 @@ class DUMFOCUSS(ParentModel):
             else:
                 loss = loss + self.spectrum_loss_weight * F.binary_cross_entropy(
                     spec.clamp(self.bce_clamp_eps, 1 - self.bce_clamp_eps), tgt.to(spec.dtype)) * x.shape[0]
+        if getattr(self, "learn_calibration", False):
+            C = (self._cal_re + 1j * self._cal_im)
+            eyeC = torch.eye(C.shape[0], dtype=C.dtype, device=C.device)
+            loss = loss + self.cal_reg_weight * (C - eyeC).abs().pow(2).sum() * x.shape[0]
         acc = self._count_accuracy(sources_num, source_estimation)
         return loss, acc, None
 
