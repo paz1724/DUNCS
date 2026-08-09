@@ -20,7 +20,7 @@ class MUSIC(SubspaceMethod):
 
     def __init__(self, system_model: SystemModel, estimation_parameter: str,
                  maskpeak_temp: float = 0.05, maskpeak_norm_eps: float = 1e-30,
-                 cell_size_frac: float = 0.025):
+                 cell_size_frac: float = 0.3):
         """Initialize the MUSIC estimator, build the search grid and smoothing cells.
 
         Args:
@@ -36,10 +36,10 @@ class MUSIC(SubspaceMethod):
         self.estimation_params = estimation_parameter
         self.maskpeak_temp = maskpeak_temp
         self.maskpeak_norm_eps = maskpeak_norm_eps
-        # Soft-argmax half-window as a fraction of the grid. The historical 0.3 gave a +/-42 deg
-        # window that, for 2-source pairs, INCLUDED the other source -> the soft readout averaged
-        # the two together (measured pair readout 26 deg vs 7 deg at 0.025), so the CNN's training
-        # gradient could never resolve pairs. 0.025 (~+/-3.5 deg, matching DU/MFOCUSS) fixes it.
+        # Soft-argmax half-window as a fraction of the grid (hoisted from a 0.3 literal). NOTE:
+        # 0.3 gives +/-42 deg; a tighter window has a MORE ACCURATE soft readout but a LOCAL-only
+        # training gradient, and a controlled A/B showed the wide window trains the CNN at least as
+        # well end-to-end (globally-informative gradient), so the table default stays 0.3.
         self.cell_size_frac = cell_size_frac
         self.angels = None
         self.distances = None
