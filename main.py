@@ -7,7 +7,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         config_name = sys.argv[1].lower()
     else:
-        config_name = "subspacenet"  # duncs , sparsenet , subspacenet , dumfocuss , doaformer
+        config_name = "mfocuss"  # duncs , sparsenet , subspacenet , dumfocuss , doaformer
     
     # Switch case for configuration selection
     match config_name:

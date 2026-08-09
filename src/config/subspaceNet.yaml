@@ -59,7 +59,7 @@ evaluation:
 commands:
   create_data: true
   save_dataset: false
-  train_model: false                      # false = skip training, load saved weights from weights/final_models
+  train_model: true                      # false = skip training, load saved weights from weights/final_models
   save_model: true                        # persist trained weights to weights/final_models (for the no-train path)
   evaluate_mode: true
   plot_results: true
