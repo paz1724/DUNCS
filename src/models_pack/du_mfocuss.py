@@ -32,6 +32,7 @@ class DUMFOCUSS(ParentModel):
                  angle_dependent_reg: bool = False,  # per-layer sparsity exponent p as a smooth learned
                  ang_n_basis: int = 8,               # function of grid ANGLE (cosine basis, init flat ->
                  ang_p_scale: float = 0.5,           # reduce-to-MFOCUSS); aimed at close-pair regions
+                 ang_reg_weight: float = 1e-2,       # ||_ang_p||^2 penalty (stabilizes the profile)
                  lam_multi_scale: float = 0.02,
                  peak_lim_deg: float = None,
                  fine_cols_per_180deg: int = 901,
@@ -214,6 +215,7 @@ class DUMFOCUSS(ParentModel):
         self.angle_dependent_reg = bool(angle_dependent_reg)
         self.ang_n_basis = int(ang_n_basis)
         self.ang_p_scale = ang_p_scale
+        self.ang_reg_weight = ang_reg_weight
         if self.angle_dependent_reg:
             self._ang_p = nn.Parameter(torch.zeros(num_iterations, self.ang_n_basis))
 
@@ -256,7 +258,8 @@ class DUMFOCUSS(ParentModel):
         # optionally continue iterating with the LAST layer's learned (lambda, p, mcp), annealing p
         # down the same Hof tail (p -> 0.01). At init this reduces DU to MFOCUSS-(K+extend) — the
         # deployed MFOCUSS budget — so the learned model can only add on top, never lag on budget.
-        if getattr(self, "angle_dependent_reg", False):
+        use_ang = getattr(self, "angle_dependent_reg", False) and getattr(self, "_ang_gate", True)
+        if use_ang:
             g_use = (self._grid_use if self._grid_use is not None else self.grid).to(Y.device)   # [G] rad
             g_norm = (g_use - g_use.amin()) / (g_use.amax() - g_use.amin() + self.rn_eps)         # [0,1]
             js = torch.arange(self.ang_n_basis, device=Y.device, dtype=torch.float64)
@@ -296,7 +299,7 @@ class DUMFOCUSS(ParentModel):
             # countering FOCUSS's over-shrinkage of large coefficients (the minimax-concave idea:
             # taper the penalty as a coefficient grows). m_k~0 at init -> factor ~1 -> classical FOCUSS.
             rn = row_norm / (row_norm.amax(dim=1, keepdim=True) + self.rn_eps)   # [B, G] relative magnitude
-            if getattr(self, "angle_dependent_reg", False):
+            if use_ang:
                 p_prof = (ang_basis @ self._ang_p[kk].to(torch.float64)).unsqueeze(0)    # [1, G], init 0
                 p_g = (p_k + self.ang_p_scale * p_prof).clamp(1e-3, 2.0 - 1e-3)          # [B, G] angle-dependent p
             else:
@@ -391,6 +394,7 @@ class DUMFOCUSS(ParentModel):
         # Source-adaptive grid: FINE dictionary for a single source (sub-grid precision), COARSE for
         # >=2 sources (broader peaks detect both close sources; the fine grid over-sparsifies -> misses one).
         single = src <= 1
+        self._ang_gate = not single    # angle-dependent p ON for >=2 sources only (no single-source bias)
         self._A_use = self.A_fine if single else self.A
         self._grid_use = self.grid_fine if single else self.grid
         spectrum = self.get_learned_covariance(x)
@@ -497,6 +501,8 @@ class DUMFOCUSS(ParentModel):
             else:
                 loss = loss + self.spectrum_loss_weight * F.binary_cross_entropy(
                     spec.clamp(self.bce_clamp_eps, 1 - self.bce_clamp_eps), tgt.to(spec.dtype)) * x.shape[0]
+        if getattr(self, "angle_dependent_reg", False):
+            loss = loss + self.ang_reg_weight * self._ang_p.pow(2).sum() * x.shape[0]
         if getattr(self, "learn_calibration", False):
             C = (self._cal_re + 1j * self._cal_im)
             eyeC = torch.eye(C.shape[0], dtype=C.dtype, device=C.device)
