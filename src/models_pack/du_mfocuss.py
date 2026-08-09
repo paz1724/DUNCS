@@ -29,6 +29,9 @@ class DUMFOCUSS(ParentModel):
                  grid_range_deg: float = None,
                  learn_calibration: bool = False,   # trainable N×N dictionary calibration C (init=I,
                  cal_reg_weight: float = 1e-3,       # so reduce-to-MFOCUSS holds); ||C-I||_F^2 kept small
+                 angle_dependent_reg: bool = False,  # per-layer sparsity exponent p as a smooth learned
+                 ang_n_basis: int = 8,               # function of grid ANGLE (cosine basis, init flat ->
+                 ang_p_scale: float = 0.5,           # reduce-to-MFOCUSS); aimed at close-pair regions
                  lam_multi_scale: float = 0.02,
                  peak_lim_deg: float = None,
                  fine_cols_per_180deg: int = 901,
@@ -205,6 +208,14 @@ class DUMFOCUSS(ParentModel):
         if self.learn_calibration:
             self._cal_re = nn.Parameter(torch.eye(system_model.params.N))
             self._cal_im = nn.Parameter(torch.zeros(system_model.params.N, system_model.params.N))
+        # Angle-dependent sparsity: p_eff(theta) = p_k + ang_p_scale * (coeffs_k . cos-basis(theta)),
+        # a SMOOTH per-layer profile over grid angle (few coefficients -> generalizes; init 0 -> flat
+        # -> reduce-to-MFOCUSS preserved). Lets the FOCUSS diversity vary by angular region.
+        self.angle_dependent_reg = bool(angle_dependent_reg)
+        self.ang_n_basis = int(ang_n_basis)
+        self.ang_p_scale = ang_p_scale
+        if self.angle_dependent_reg:
+            self._ang_p = nn.Parameter(torch.zeros(num_iterations, self.ang_n_basis))
 
     def get_model_params(self):
         """Returns a short string summarizing the model's hyper-parameters.
@@ -245,6 +256,11 @@ class DUMFOCUSS(ParentModel):
         # optionally continue iterating with the LAST layer's learned (lambda, p, mcp), annealing p
         # down the same Hof tail (p -> 0.01). At init this reduces DU to MFOCUSS-(K+extend) — the
         # deployed MFOCUSS budget — so the learned model can only add on top, never lag on budget.
+        if getattr(self, "angle_dependent_reg", False):
+            g_use = (self._grid_use if self._grid_use is not None else self.grid).to(Y.device)   # [G] rad
+            g_norm = (g_use - g_use.amin()) / (g_use.amax() - g_use.amin() + self.rn_eps)         # [0,1]
+            js = torch.arange(self.ang_n_basis, device=Y.device, dtype=torch.float64)
+            ang_basis = torch.cos(np.pi * js[None, :] * g_norm[:, None])                          # [G, n_basis]
         extend = int(getattr(self, "extend_iters", 0))
         total_iters = self.num_iter + extend
         for k in range(total_iters):
@@ -280,7 +296,12 @@ class DUMFOCUSS(ParentModel):
             # countering FOCUSS's over-shrinkage of large coefficients (the minimax-concave idea:
             # taper the penalty as a coefficient grows). m_k~0 at init -> factor ~1 -> classical FOCUSS.
             rn = row_norm / (row_norm.amax(dim=1, keepdim=True) + self.rn_eps)   # [B, G] relative magnitude
-            w = (row_norm + self.reweight_floor) ** (1.0 - p_k / 2.0) * (1.0 + m_k * rn)   # floor matches MFOCUSS (was 1e-9: kept dying atoms ~1000x more alive)
+            if getattr(self, "angle_dependent_reg", False):
+                p_prof = (ang_basis @ self._ang_p[kk].to(torch.float64)).unsqueeze(0)    # [1, G], init 0
+                p_g = (p_k + self.ang_p_scale * p_prof).clamp(1e-3, 2.0 - 1e-3)          # [B, G] angle-dependent p
+            else:
+                p_g = p_k
+            w = (row_norm + self.reweight_floor) ** (1.0 - p_g / 2.0) * (1.0 + m_k * rn)   # floor matches MFOCUSS
 
             AW = A.unsqueeze(0) * w.unsqueeze(1).to(torch.complex128)   # [B, N, G]
             gram = torch.einsum("bng,bmg->bnm", AW, AW.conj())    # [B, N, N]
