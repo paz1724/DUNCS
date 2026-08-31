@@ -20,12 +20,30 @@ from src.metrics.criterions import set_criterions
 from src.utils import device
 
 
+def _unit_norm_cols(A: torch.Tensor, enable: bool = True) -> torch.Tensor:
+    """Scale every dictionary atom to unit norm.
+
+    Sparse recovery (FOCUSS/IRLS) assumes unit-norm atoms: otherwise the lp penalty is biased
+    toward high-energy columns. On the RECORDED manifold that bias is not benign -- the pattern is
+    linearly interpolated between 3-deg measured nodes, so |a(theta)| dips ~0.14% mid-cell (a chord
+    across a curved manifold) and peaks exactly ON the nodes. Because the 150 MHz beam is ~50 deg
+    wide the correlation peak is very flat, so even that 0.14% tilt drags the arg-max onto the
+    nearest node: measured median distance of MFOCUSS/DU estimates to a 3-deg node was 0.044 deg,
+    giving a hard 3/sqrt(12) = 0.87 deg accuracy floor. Normalizing removes it
+    (single-source RMS 0.93 -> 0.40 deg, i.e. down to the CRLB of 0.36).
+    """
+    if not enable:
+        return A
+    return A / torch.linalg.norm(A, dim=0, keepdim=True).clamp_min(1e-30)
+
+
 class MFOCUSS(ParentModel):
     """Classical M-FOCUSS sparse-recovery DoA baseline (fixed lambda, p; no training)."""
 
     def __init__(self, system_model: SystemModel, num_iterations: int = 50,
                  grid_size: int = 121, p: float = 0.8, lam: float = 0.05,
                  criterion: str = "rmspe", grid_range_deg=None,
+                 normalize_dict: bool = True,   # unit-norm atoms; see _unit_norm_cols (0.87deg floor)
                  p_init: float = 0.99, p_min: float = 0.01, p_decay: float = 0.2,
                  lam_init: float = 0.99, lam_max: float = 0.99, lam_growth: float = 0.2,
                  lam_multi: float = 0.02,
@@ -100,11 +118,13 @@ class MFOCUSS(ParentModel):
         grid_rad = np.deg2rad(np.linspace(lo, hi, gm))
         A = np.asarray(system_model.steering_vec(grid_rad))      # (N, Gm) coarse (M>=2)
         self.register_buffer("grid", torch.as_tensor(grid_rad, dtype=torch.float64))
-        self.register_buffer("A", torch.as_tensor(A, dtype=torch.complex128))
+        self.register_buffer("A", _unit_norm_cols(torch.as_tensor(A, dtype=torch.complex128),
+                                                  normalize_dict))
         grid_rad_f = np.deg2rad(np.linspace(lo, hi, grid_size))
         Af = np.asarray(system_model.steering_vec(grid_rad_f))   # (N, G) fine (M=1)
         self.register_buffer("grid_fine", torch.as_tensor(grid_rad_f, dtype=torch.float64))
-        self.register_buffer("A_fine", torch.as_tensor(Af, dtype=torch.complex128))
+        self.register_buffer("A_fine", _unit_norm_cols(torch.as_tensor(Af, dtype=torch.complex128),
+                                                       normalize_dict))
         self._A_use = None
         self._grid_use = None
 

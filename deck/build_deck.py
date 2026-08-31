@@ -90,6 +90,7 @@ APERTURE_FIG = FIG_DIR / "aperture_rayleigh_150.png"
 LOSS_CURVES_FIG = FIG_DIR / "loss_curves_synth.png"
 LOSS_FIX_FIG = FIG_DIR / "loss_curves_fix.png"
 LOSS_FINAL_FIG = FIG_DIR / "loss_curves_final.png"
+DU_ANGLE_FIG = FIG_DIR / "du_angle_reg.png"
 
 EQ_DIR = Path(os.path.join(os.environ.get("TEMP", "."), "duncs_eq_cache"))
 EQ_DIR.mkdir(parents=True, exist_ok=True)
@@ -1323,6 +1324,52 @@ def add_final_loss_slide():
         "DU-MFOCUSS (fixed): genuinely descends to best-val 0.033 (best-checkpoint marked) — fixes: train-temp floor restored the RMSPE gradient, the MCP init was unfrozen (−16→−3; trained m_k≈0.03–0.04), and the late flattening is the aux loss handing over to RMSPE.",
         "SubspaceNet-MUSIC ~0.041 and RootMUSIC ~0.077 — healthy descents, unchanged by the fixes.",
         "SubspaceNet-MVDR (fixed): 0.19 flat → stable descent to 0.098 best-val — grad-clip + best-checkpoint hold the gain; its table row improved on all 8 cells.",
+    ], size=8.4, gap=0.02)
+    return sl
+
+
+def add_du_lever_slide():
+    """Angle-dependent sparsity: the capacity lever that makes DU-MFOCUSS the 2nd-best model."""
+    sl = add_blank("DU-MFOCUSS — angle-dependent sparsity (the capacity lever)", theme="DUNCS",
+                   subtitle="After MCP and a learnable dictionary calibration proved near-dead on synthetic (no mismatch to fix), a learned ANGLE-DEPENDENT sparsity exponent finally moved DU — to the lowest validation loss of any model.")
+    if DU_ANGLE_FIG.exists():
+        w = 11.8; h = w * 1020 / 2550
+        sl.shapes.add_picture(str(DU_ANGLE_FIG), Inches((SLIDE_W - w) / 2), Inches(1.12), Inches(w), Inches(h))
+    _add_card(sl, 0.35, 6.28, 12.65, 1.02, fill=COL_CARD_BG2)
+    _add_text(sl, 0.5, 6.34, 12.3, 0.26, "What it is, and the result", size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.55, 6.6, 12.3, 0.7, [
+        "Lever: each unrolled layer's FOCUSS diversity exponent p becomes a SMOOTH learned function of grid ANGLE (8 cos-basis coefficients/layer, init flat → reduce-to-MFOCUSS exact), gated to M≥2 so singles keep the optimal uniform p, with a ‖profile‖² stabilizer.",
+        "Result: best-val 0.0292 — the LOWEST of any model (below MUSIC, approaching DoAFormer); DU now beats classical MFOCUSS on ALL SIX pair columns (e.g. multipath MD 9→6%, synth reuse 4→3%), a strict Pareto win, persisted.",
+        "Why this lever and not the others: MCP / dictionary-C add CORRECTION capacity, and synthetic has no mismatch to correct; angle-dependent p adds RESOLUTION capacity — it changes what FOCUSS can represent, which is the close-pair bottleneck.",
+    ], size=8.2, gap=0.02)
+    return sl
+
+
+def add_music_window_slide():
+    """Is SubspaceNet-MUSIC's gentle loss a bug? Controlled soft-argmax-window A/B — verdict: no."""
+    sl = add_blank("SubspaceNet-MUSIC — is the gentle loss a bug? (controlled A/B)", theme="Results",
+                   subtitle="The MUSIC curve descends only 0.06→0.041 — reported as ‘not decreasing enough’, so treated as a bug hunt. A recipe-matched A/B on the soft-argmax readout window settles it at the source.")
+    def _r(a, b, c, d):
+        return f"  {a:<25}{b:<11}{c:<12}{d}"
+    tbl = "\n".join([
+        _r("soft-argmax window", "best-val", "reuse", "multipath"),
+        "  " + "─" * 60,
+        _r("WIDE  ±42°  (current)", "0.0468", "1.37 / 2", "2.73 / 8   ← lower loss + better MD"),
+        _r("tight ±3.6° (“fix”)", "0.0552", "1.32 / 3", "2.61 / 11"),
+        _r("", "", "RMS° / MD%", ""),
+    ])
+    _add_card(sl, 1.55, 1.35, 10.2, 1.72, fill=COL_CARD_BG2)
+    _add_text(sl, 1.75, 1.44, 9.8, 0.26, "Controlled A/B — identical recipe, both windows, scored on the SAME eval cells (isolates the window from the training recipe)",
+              size=9.5, bold=True, color=THEMES["Final"][1])
+    _add_text(sl, 1.75, 1.78, 9.9, 1.2, tbl, size=10.5, color=COL_TEXT, name="Consolas", wrap=False)
+    _add_card(sl, 0.35, 3.34, 12.65, 3.9, fill=COL_CARD_BG2)
+    _add_text(sl, 0.5, 3.4, 12.3, 0.26, "The suspect, the test, and the verdict", size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.55, 3.7, 12.3, 3.4, [
+        "SUSPECT: the differentiable readout window is cell_size = 0.3·grid ≈ ±42°, and its only shrinker (adjust_diff_method_temperature) is DEAD CODE — never called by the trainer. A micro-measurement made it look guilty: at ±42° a single source’s window swallows its neighbor, giving 26° pair readout. So I tightened it to ±3.6° and retrained.",
+        "TEST: retrain MUSIC with the IDENTICAL recipe at ±42° vs ±3.6° and score BOTH on the same eval cells — the only way to separate the window from the training recipe (my first comparison had confounded the two).",
+        "RESULT: the WIDE window (current) WINS — lower validation loss (0.0468 vs 0.0552) AND better detection. A soft-argmax exists to supply GRADIENT, not accuracy: the wide window always contains the true peak, so it trains the CNN better even though its isolated readout looks blurrier. The tight ‘fix’ would have RAISED the very loss it was meant to cure.",
+        "VERDICT — no bug. The flat TRAIN loss (~0.13) is the soft-argmax window’s structural floor (a soft readout cannot sharpen past it, and we need it soft for the gradient); the VALIDATION loss bottoms at epoch 45 (0.041) then mildly overfits, harvested by the best-checkpoint. MUSIC simply starts near its floor — the CNN covariance is already good at init — so a gentle curve is the honest, correct behavior.",
+        "LESSON: a micro-measurement (readout accuracy) misled; only the recipe-matched end-to-end A/B is ground truth. The premature ‘fix’ was reverted before it touched the tables (guard-persist caught it); cell_size_frac was kept as a parameter at its validated default 0.3 (no-magic-numbers). Residual headroom vs DoAFormer (0.041 vs 0.027) is architectural — the fixed subspace readout — not a bug.",
     ], size=8.4, gap=0.02)
     return sl
 
@@ -3320,6 +3367,483 @@ def add_full_perf_table_slide():
     return sl
 
 
+# ---- RAG heatmap performance tables (Excel 3-color scale, per-column relative) ----
+_HEAT_G = (0x63, 0xBE, 0x7B)              # green  = best (lowest RMS) in the column
+_HEAT_Y = (0xFF, 0xEB, 0x84)              # yellow = mid
+_HEAT_R = (0xF8, 0x69, 0x6B)              # red    = worst (highest RMS) in the column
+_HEAT_CRB = RGBColor(0xC9, 0xD6, 0xEA)    # blue-grey reference band (the bound)
+_HEAT_NA  = RGBColor(0xE9, 0xEC, 0xF1)    # not-evaluated cell
+_HEAT_MODELS = ["MFOCUSS", "SPICE", "SubspaceNet-MUSIC", "SubspaceNet-MVDR",
+                "SubspaceNet-RootMUSIC", "DoAFormer", "DoAFormer-FT",
+                "DU-MFOCUSS", "DU-MFOCUSS-cal", "SubspaceNet-ESPRIT"]
+_HEAT_SHORT = {"MFOCUSS": "MFOCUSS", "SPICE": "SPICE (IAA)", "SubspaceNet-MUSIC": "SubspaceNet-MUSIC",
+               "SubspaceNet-MVDR": "SubspaceNet-MVDR", "SubspaceNet-RootMUSIC": "SubspaceNet-RootMUSIC",
+               "DoAFormer": "DoAFormer", "DoAFormer-FT": "DoAFormer-FT", "DU-MFOCUSS": "DU-MFOCUSS",
+               "DU-MFOCUSS-cal": "DU-MFOCUSS-cal", "SubspaceNet-ESPRIT": "SubspaceNet-ESPRIT"}
+
+
+def _heat_mcol(m):
+    if m in ("MFOCUSS", "SPICE"):
+        return COL_WARN
+    if m.startswith("DU-MFOCUSS"):
+        return THEMES["DUNCS"][1]
+    return THEMES["SubspaceNet"][1]
+
+
+def _heat_color(t):
+    """Excel 3-color scale green→yellow→red for t∈[0,1] (0 = best/green, 1 = worst/red)."""
+    t = max(0.0, min(1.0, float(t)))
+    if t <= 0.5:
+        a, b, f = _HEAT_G, _HEAT_Y, t / 0.5
+    else:
+        a, b, f = _HEAT_Y, _HEAT_R, (t - 0.5) / 0.5
+    return RGBColor(*[round(a[i] + (b[i] - a[i]) * f) for i in range(3)])
+
+
+def _heatmap_group_slide(title, subtitle, flavs, footnote, takeaways):
+    """One performance group (Single / Reuse15 / Reuse25) rendered as a per-column RAG heatmap:
+    each cell's background is colored by its RMS relative to that column (green = lowest / best,
+    red = highest / worst) — the Sigma-table style. CRB reference row (blue) sits on top."""
+    sl = add_blank(title, theme="Results", subtitle=subtitle)
+    colrng = {}
+    for f, _ in flavs:
+        rs = [_v3(f"{m}|{f}")["detErr_rms"] for m in _HEAT_MODELS if _v3(f"{m}|{f}")]
+        ms = [_v3(f"{m}|{f}")["md"] for m in _HEAT_MODELS if _v3(f"{m}|{f}")]
+        colrng[f] = (min(rs), max(rs), min(ms), max(ms)) if rs else (0.0, 1.0, 0.0, 1.0)
+    nfl = len(flavs); x0 = 0.28; mw = 2.45
+    fw = min(1.95, (13.05 - x0 - mw) / nfl)
+    y = 1.44
+    cx = x0                                                            # header row
+    _add_card(sl, cx, y, mw - 0.07, 0.46, fill=THEMES["Results"][1])
+    _add_text(sl, cx + 0.06, y, mw - 0.18, 0.46, "Method", size=10, bold=True, color=COL_TITLE_FG,
+              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+    cx += mw
+    for f, lab in flavs:
+        _add_card(sl, cx, y, fw - 0.06, 0.46, fill=THEMES["Results"][1])
+        _add_text(sl, cx + 0.03, y, fw - 0.12, 0.46, lab, size=9.5, bold=True, color=COL_TITLE_FG,
+                  align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+        cx += fw
+    y += 0.5
+    cx = x0                                                            # CRB reference row
+    _add_card(sl, cx, y, mw - 0.07, 0.37, fill=_HEAT_CRB)
+    _add_text(sl, cx + 0.08, y, mw - 0.2, 0.37, "CRB (bound)", size=8.6, bold=True, color=COL_TEXT,
+              anchor=MSO_ANCHOR.MIDDLE)
+    cx += mw
+    for f, _ in flavs:
+        d = _v3(f"CRB|{f}")
+        _add_card(sl, cx, y, fw - 0.06, 0.37, fill=_HEAT_CRB)
+        _add_text(sl, cx + 0.03, y, fw - 0.12, 0.37, (f"{d['detErr_rms']:.2f}" if d else "—"),
+                  size=9.2, italic=True, color=COL_TEXT, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+        cx += fw
+    y += 0.4
+    for m in _HEAT_MODELS:                                            # model rows
+        cx = x0
+        _add_card(sl, cx, y, mw - 0.07, 0.37, fill=COL_CARD_BG)
+        _add_text(sl, cx + 0.08, y, mw - 0.2, 0.37, _HEAT_SHORT[m], size=8.3, bold=True,
+                  color=_heat_mcol(m), anchor=MSO_ANCHOR.MIDDLE)
+        cx += mw
+        for f, _ in flavs:
+            d = _v3(f"{m}|{f}")
+            if d:
+                lo, hi, mlo, mhi = colrng[f]
+                tr = (d["detErr_rms"] - lo) / (hi - lo) if hi > lo else 0.0
+                tm = (d["md"] - mlo) / (mhi - mlo) if mhi > mlo else 0.0
+                fill = _heat_color(0.5 * tr + 0.5 * tm)          # color by BOTH RMS and MD
+                val = f"{d['detErr_rms']:.1f}/{d['md']*100:.0f}"
+            else:
+                fill, val = _HEAT_NA, "—"
+            _add_card(sl, cx, y, fw - 0.06, 0.37, fill=fill)
+            _add_text(sl, cx + 0.03, y, fw - 0.12, 0.37, val, size=9.6, color=COL_TEXT,
+                      align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+            cx += fw
+        y += 0.375
+    _add_text(sl, 0.28, y + 0.03, 12.9, 0.24, footnote, size=7.2, italic=True, color=COL_SUB)
+    _add_card(sl, 0.28, y + 0.28, 12.77, 0.95, fill=COL_CARD_BG2)
+    _add_text(sl, 0.46, y + 0.33, 12.4, 0.28, "Takeaway", size=11, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.5, y + 0.6, 12.4, 0.6, takeaways, size=8)
+    return sl
+
+
+def add_hm_single_slide():
+    return _heatmap_group_slide(
+        "Performance — Single-source (RAG heatmap)",
+        "dfErr RMS° / MD%. Cell color = RMS AND MD combined, relative to its column (green = best on both → red = worst), Sigma-table style. Columns: Synth · Real-Sy (synthetic-trained) · Real-DS (DataSim-trained) · Sim (Data-from-Sim).",
+        [("single", "Synth"), ("mit_single", "Real-Sy"), ("mit150ds", "Real-DS"), ("datasim", "Sim")],
+        "dfErr RMS [°] / MD [%]  ·  threshold 10°  ·  150 MHz (d/λ≈0.234)  ·  real-front median far below RMS (MFOCUSS ≈0.1° ≈ MATLAB MAE)  ·  CRB = deterministic bound (blue)  ·  color = combined RMS + MD, per-column relative.",
+        [
+            "SubspaceNet-MUSIC / MVDR lead synthetic single (0.4°, 0% MD); DoAFormer-FT & DU-MFOCUSS-cal recover real single at 0% MD after adaptation.",
+            "Real-front single sits at a ~1.8–3.1° RMS floor (calibration-limited); the DataSim-trained DoAFormer overfits sim-multipath and regresses on clean single (3.5°/9%).",
+        ])
+
+
+def add_hm_reuse15_slide():
+    return _heatmap_group_slide(
+        "Performance — Reuse / close pairs ≥15° (RAG heatmap)",
+        "Two sources 15° apart. S-nc = non-coherent, S-coh = coherent (ρ≈0.9). dfErr RMS° / MD%; color per column = RMS + MD combined (green = best on both → red = worst). At 150 MHz a 15° pair is deeply sub-Rayleigh (0.49× co-array).",
+        [("reuse_noncoh", "S-nc"), ("multipath", "S-coh"), ("mit_reuse", "Real-Sy"),
+         ("mit150ds_reuse", "Real-DS"), ("datasim_reuse", "Sim")],
+        "dfErr RMS [°] / MD [%]  ·  threshold 10°  ·  15° separation = 0.49× co-array Rayleigh (sub-resolution — miss-rate is aperture PHYSICS)  ·  CRB = per-scene plug-in bound (blue)  ·  color = combined RMS + MD, per-column relative.",
+        [
+            "SubspaceNet-MUSIC & DoAFormer lead synthetic pairs; DU-MFOCUSS now beats classical MFOCUSS on both synthetic pair columns (angle-dependent sparsity).",
+            "On REAL pairs the adapted models win — DoAFormer-FT (2% MD) and DU-MFOCUSS-cal (3%); plain DoAFormer collapses (29%) without real fine-tuning.",
+        ])
+
+
+def add_hm_reuse25_slide():
+    return _heatmap_group_slide(
+        "Performance — Close pairs ≥25° (RAG heatmap) — the aperture trend",
+        "Same test at ≥25° separation (0.81× co-array Rayleigh vs 0.49× at 15°) — closer to resolvable, so miss-rates drop. dfErr RMS° / MD%; color per column = RMS + MD combined (green = best on both → red = worst).",
+        [("reuse_noncoh25", "S-nc"), ("multipath25", "S-coh"), ("mit_reuse25", "Real-Sy"),
+         ("mit150ds_reuse25", "Real-DS"), ("datasim_reuse25", "Sim")],
+        "dfErr RMS [°] / MD [%]  ·  threshold 10°  ·  ≥25° = 0.81× co-array Rayleigh  ·  compare cell-by-cell with the 15° table for the monotone aperture trend  ·  CRB (blue)  ·  color = combined RMS + MD, per-column relative.",
+        [
+            "Widening 15°→25° drops miss-rates for the well-behaved methods (MUSIC, MVDR, DU) — the clean aperture-limit signature.",
+            "Methods limited by other factors (ESPRIT calibration, DataSim-DoAFormer sim-overfit) barely move — their bottleneck isn't the separation.",
+        ])
+
+
+def add_doa_sanity_slide(title, subtitle, figs, caps, whatrun):
+    """Sanity DOA power-spectrum snapshots rendered straight from DoA_Wrapper.m → Plot_DOA."""
+    sl = add_blank(title, theme="Results", subtitle=subtitle)
+    th = 2.55
+    sizes = [_png_size_in(str(f), th) if f.exists() else (th * 1.48, th) for f in figs]
+    gap = 0.2
+    total = sum(w for w, _ in sizes) + gap * (len(figs) - 1)
+    x = (SLIDE_W - total) / 2
+    y = 1.62
+    hmax = max(h for _, h in sizes)
+    for f, (w, h), cap in zip(figs, sizes, caps):
+        _add_text(sl, x, y - 0.3, w, 0.26, cap, size=9.5, bold=True,
+                  color=THEMES["Results"][1], align=PP_ALIGN.CENTER)
+        if f.exists():
+            sl.shapes.add_picture(str(f), Inches(x), Inches(y), Inches(w), Inches(h))
+        x += w + gap
+    cy = y + hmax + 0.16
+    _add_card(sl, 0.3, cy, 12.75, SLIDE_H - cy - 0.12, fill=COL_CARD_BG2)
+    _add_text(sl, 0.5, cy + 0.07, 12.4, 0.28,
+              "What was run in each plot (straight from DoA_Wrapper.m → Plot_DOA, cArray/Standalones)",
+              size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.55, cy + 0.4, 12.35, SLIDE_H - cy - 0.55, whatrun, size=8.4)
+    return sl
+
+
+def add_doa_sanity_single_slide():
+    figs = [FIG_DIR / f"doa_sanity_single_r{r}.png" for r in (1, 2, 3)]
+    return add_doa_sanity_slide(
+        "DOA sanity — Single-source (Sim): MFOCUSS · MUSIC · MVDR · IAA · BF",
+        "Power-spectrum snapshots straight from the cArray DoA_Wrapper Plot_DOA — five classical estimators overlaid on one axis; ground truth = vertical green dashed line; each method's estimated DoAs are dashed lines in its own color.",
+        figs,
+        ["Realization 1 — GT 12°", "Realization 2 — GT −23°", "Realization 3 — GT 34°"],
+        [
+            "SOURCE: DoA_Wrapper.m → Plot_DOA (Sandboxes\\Standalones) — overlays MFOCUSS, MUSIC, MVDR, IAA, BF (MVDR via the wrapper's inline Capon spectrum 1/aᴴR⁻¹a); the legend lists each method's DF error vs GT.",
+            "ARRAY & BAND: recorded ULA3 geometry [0, 0.35, 1.58, 1.91, 2.3] m (5 elements) at 150 MHz (λ = 2 m) — the 'Sim' column conditions; SNR 15 dB, 8 snapshots, independent noise per realization.",
+            "SCENE: ONE front-cone source; ground truth (green dashed) at 12° / −23° / 34° for realizations 1 / 2 / 3 (seeds 1724 / 2025 / 4242).",
+            "SANITY: every spectrum method peaks at the GT — MUSIC & MFOCUSS give the sharpest, near-exact readout (DF error ≲ 0.2°); BF is broad but centered. Single-source DoA is easy at this aperture, matching the Sim-column table (all methods ≈ 0 % MD).",
+        ])
+
+
+def add_doa_sanity_reuse_slide():
+    figs = [FIG_DIR / f"doa_sanity_reuse15_r{r}.png" for r in (1, 2, 3)]
+    return add_doa_sanity_slide(
+        "DOA sanity — Reuse / close pair ≥15° (Sim): MFOCUSS · MUSIC · MVDR · IAA · BF",
+        "Same Plot_DOA overlay for TWO non-coherent sources 15° apart — a sub-Rayleigh pair at 150 MHz. Watch which methods resolve two peaks vs smear them into one lobe.",
+        figs,
+        ["Realization 1 — GT [−20°, −5°]", "Realization 2 — GT [5°, 20°]", "Realization 3 — GT [28°, 43°]"],
+        [
+            "SOURCE: same DoA_Wrapper.m → Plot_DOA overlay of MFOCUSS, MUSIC, MVDR, IAA, BF; GT = two vertical green dashed lines; legend = per-method DF error.",
+            "ARRAY & BAND: recorded ULA3 @150 MHz, SNR 15 dB, 8 snapshots — the 'Sim' conditions; the two signals are independent (non-coherent = 'reuse').",
+            "SCENE: TWO sources 15° apart; ground truth at [−20°, −5°] / [5°, 20°] / [28°, 43°] for realizations 1 / 2 / 3.",
+            "SANITY: a 15° pair is sub-Rayleigh here — MFOCUSS & MUSIC RESOLVE both peaks (DF error ~ 1°), while BF / IAA / MVDR smear them into one lobe and drop a spurious second peak (DF error 7–35°). This is exactly why the Sim column ranks MUSIC / MFOCUSS above the beamformers on close pairs.",
+        ])
+
+
+def add_doa_all_single_slide():
+    figs = [FIG_DIR / f"doa_all_single_r{r}.png" for r in (1, 2, 3)]
+    return add_doa_sanity_slide(
+        "DOA comparison — ALL table algorithms, Single-source (Sim)",
+        "Every table algorithm's DOA spectrum on the SAME recorded-ULA3 @150 MHz Sim scene, overlaid through the cArray DoA_Wrapper Plot_DOA. Learned models run with their trained weights on the recorded manifold; the estimate is read off each method's own spectrum peak; GT = green dashed.",
+        figs,
+        ["Realization 1 — GT 12°", "Realization 2 — GT −23°", "Realization 3 — GT 34°"],
+        [
+            "ALGORITHMS (6): MFOCUSS & SPICE-IAA (classical) + SubspaceNet-MUSIC / MVDR / RootMUSIC / ESPRIT (learned, trained weights, recorded manifold). Each curve is that method's power spectrum; RootMUSIC/ESPRIT use a MUSIC pseudo-spectrum from their learned covariance.",
+            "OMITTED (honest): DoAFormer — a gridless set-prediction transformer with NO power spectrum (its checkpoint architecture also doesn't match a fresh build); DU-MFOCUSS — its deployed row needs the eval-time readout that isn't reproducible standalone (its full-azimuth unrolled dictionary shows edge artifacts). Both are in the heatmap tables.",
+            "ARRAY & BAND: recorded ULA3 [0, 0.35, 1.58, 1.91, 2.3] m (5 elements) @150 MHz; SNR 30 dB, 8 snapshots; scene generated on the measured manifold via the DUNCS Samples pipeline (seeds 1724 / 2025 / 4242).",
+            "SANITY: all six recover the single source to ≲1° (MFOCUSS 0.0–1.0°, SPICE ≤0.1°, all four SubspaceNet readouts ≤0.1°) — matching the Sim-column table (single-source ≈0 % MD).",
+        ])
+
+
+def add_doa_all_reuse_slide():
+    figs = [FIG_DIR / f"doa_all_reuse15_r{r}.png" for r in (1, 2, 3)]
+    return add_doa_sanity_slide(
+        "DOA comparison — ALL table algorithms, Reuse ≥15° (Sim)",
+        "Same overlay for TWO non-coherent sources 15° apart — a sub-Rayleigh pair at 150 MHz. Watch which learned/classical methods resolve two peaks vs smear them into one.",
+        figs,
+        ["Realization 1 — GT [−20°, −5°]", "Realization 2 — GT [5°, 20°]", "Realization 3 — GT [28°, 43°]"],
+        [
+            "ALGORITHMS (6): MFOCUSS, SPICE-IAA, SubspaceNet-MUSIC / MVDR / RootMUSIC / ESPRIT — DOA spectra overlaid via the real Plot_DOA; estimate = spectrum peak; GT = two green dashed lines. (DoAFormer & DU-MFOCUSS omitted — see the single-source slide.)",
+            "RESOLVE the 15° pair: SPICE (1.0–1.5°), SubspaceNet-MUSIC (0.2–0.6°), SubspaceNet-RootMUSIC (0.1–0.4°), SubspaceNet-ESPRIT (0.1°) — two clean peaks at the GT angles.",
+            "SMEAR the pair into ONE lobe: SubspaceNet-MVDR (6.3–6.8°, Capon self-cancellation under correlated arrivals) and MFOCUSS (6.2–7.5°, sub-Rayleigh merge to the midpoint) — exactly the ranking the Sim column shows (MUSIC/RootMUSIC/ESPRIT above the beamformers on close pairs).",
+            "ARRAY & BAND: recorded ULA3 @150 MHz, SNR 30 dB, 8 snapshots; two independent (non-coherent = reuse) sources on the measured manifold.",
+        ])
+
+
+_MULTICOL_METHODS = ["ML", "MFOCUSS", "SPICE (IAA)", "SubspaceNet-MUSIC", "DoAFormer", "DU-MFOCUSS", "DU-MFOCUSS-guarded"]
+_MULTICOL_READ = {
+    "single": [
+        "Single-source is the easy regime on the clean manifolds — every method lands ≤ 1° at 0 % MD (Synth→Synth 0.2–1.0°, and on the measured-manifold columns MFOCUSS / DU-guarded reach ~0.1°).",
+        "Sim→Sim (dense coherent DataSim multipath) is uniformly hard even for one source — every method sits at ~3.5° / 4–5 % MD except SPICE (2.6° / 3 %), because each scene superposes several coherent reflections.",
+        "DoAFormer is the weakest single-source method on the clean columns (1.0–1.9°) — a gridless regression head has no sub-grid refinement, unlike the spectrum searches.",
+        "'Real' columns are a measured-ULA3-MANIFOLD reconstruction: the raw per-scene recordings carrying the legacy ~1.2° calibration bias are not recoverable, so these track the manifold rather than that historical real-data floor.",
+    ],
+    "reuse15": [
+        "Clean manifolds (Synth→Synth / Synth→Real / Sim→Real): ML and SubspaceNet-MUSIC lead (0.3–0.4°), DU-MFOCUSS-guarded is ≥ MFOCUSS in EVERY column (0.8 / 0.5 / 0.8 vs 1.1 / 1.0 / 1.0) — the classical-floor guard working as designed.",
+        "Sim→Sim (dense coherent DataSim multipath) is the hard column: SubspaceNet-MUSIC collapses worst (5.8° / 57 % MD — subspace fails on coherent sources), while the DataSim-trained DoAFormer is the most robust (4.6° / 12 %); MFOCUSS misses 43 %, DU-guarded 30 %.",
+        "'Real' columns are a measured-ULA3-MANIFOLD reconstruction — the raw per-scene recordings that carried the legacy ~1.2° calibration bias are not recoverable, so these track the manifold rather than that historical real-data floor.",
+    ],
+    "reuse25": [
+        "Wider 25° pairs — less sub-Rayleigh, so errors and miss-rates drop versus 15° on every clean column; the ranking is preserved (ML / SubspaceNet-MUSIC lead, DU-guarded ≥ MFOCUSS throughout: 0.7 / 0.3 / 0.3 vs 0.9 / 0.5 / 0.5).",
+        "Sim→Sim again separates the methods by coherence robustness: SPICE 4.1° / 14 % and DoAFormer 4.5° / 14 % hold up best, SubspaceNet-MUSIC is worst (5.3° / 54 %), MFOCUSS misses 42 %.",
+        "'Real' columns = measured-manifold reconstruction (raw recordings not recoverable).",
+    ],
+}
+
+
+def add_multicol_table_slide(scen, title, subtitle):
+    data = _json.loads((Path(r"C:/GitHub/DUNCS/data/simulations/results/rebuilt_multicol.json")).read_text(encoding="utf-8"))
+    cols = data["columns"]; cells = data["cells"]; ncol = len(cols)
+    sl = add_blank(title, theme="Results", subtitle=subtitle)
+    def cv(m, c): return cells.get(f"{scen}|{c}|{m}")
+    rlo = [min(cv(m, c)[0] for m in _MULTICOL_METHODS if cv(m, c)) for c in cols]
+    rhi = [max(cv(m, c)[0] for m in _MULTICOL_METHODS if cv(m, c)) for c in cols]
+    mlo = [min(cv(m, c)[1] for m in _MULTICOL_METHODS if cv(m, c)) for c in cols]
+    mhi = [max(cv(m, c)[1] for m in _MULTICOL_METHODS if cv(m, c)) for c in cols]
+    mw = 2.75; x0 = 0.28; fw = min(2.35, (13.05 - x0 - mw) / ncol); y = 1.5
+    cx = x0
+    _add_card(sl, cx, y, mw - 0.07, 0.52, fill=THEMES["Results"][1])
+    _add_text(sl, cx + 0.06, y, mw - 0.18, 0.52, "Method", size=10, bold=True, color=COL_TITLE_FG, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+    cx += mw
+    for lab in cols:
+        _add_card(sl, cx, y, fw - 0.06, 0.52, fill=THEMES["Results"][1])
+        _add_text(sl, cx + 0.03, y, fw - 0.12, 0.52, lab, size=9.5, bold=True, color=COL_TITLE_FG, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+        cx += fw
+    y += 0.56
+    for m in _MULTICOL_METHODS:
+        cx = x0; hero = m.startswith("DU-MFOCUSS-guarded")
+        _add_card(sl, cx, y, mw - 0.07, 0.42, fill=(COL_CARD_BG2 if hero else COL_CARD_BG))
+        mcol = THEMES["DUNCS"][1] if m.startswith("DU") else (THEMES["SubspaceNet"][1] if (m.startswith("SubspaceNet") or m.startswith("DoAFormer")) else COL_WARN)
+        _add_text(sl, cx + 0.08, y, mw - 0.2, 0.42, m, size=8.4, bold=True, color=mcol, anchor=MSO_ANCHOR.MIDDLE)
+        cx += mw
+        for ci, c in enumerate(cols):
+            v = cv(m, c)
+            if v:
+                r, md = v
+                tr = (r - rlo[ci]) / (rhi[ci] - rlo[ci]) if rhi[ci] > rlo[ci] else 0.0
+                tm = (md - mlo[ci]) / (mhi[ci] - mlo[ci]) if mhi[ci] > mlo[ci] else 0.0
+                _add_card(sl, cx, y, fw - 0.06, 0.42, fill=_heat_color(0.5 * tr + 0.5 * tm))
+                _add_text(sl, cx + 0.03, y, fw - 0.12, 0.42, f"{r:.1f}/{md:.0f}", size=9.5, color=COL_TEXT, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+            else:
+                _add_card(sl, cx, y, fw - 0.06, 0.42, fill=_HEAT_NA)
+            cx += fw
+        y += 0.44
+    _add_text(sl, 0.28, y + 0.05, 12.9, 0.3,
+              "RMS° / MD% · per-column RAG heatmap (green = best on both metrics). Columns = train→test manifold: Synth→Synth · Synth→Real · Sim→Real · Sim→Sim. 'Real' = measured-ULA3-manifold reconstruction; 'Sim' = DataSim @150 MHz multipath.",
+              size=7.4, italic=True, color=COL_SUB)
+    _add_card(sl, 0.28, y + 0.42, 12.77, SLIDE_H - (y + 0.42) - 0.12, fill=COL_CARD_BG2)
+    _add_text(sl, 0.46, y + 0.48, 12.4, 0.28, "Reading", size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.5, y + 0.76, 12.4, SLIDE_H - (y + 0.76) - 0.2, _MULTICOL_READ[scen], size=8.2)
+    return sl
+
+
+def add_tradeoffs_rebuilt_slide():
+    """Which method to use, based on the REBUILT (reproducible) results only."""
+    sl = add_blank("Model tradeoffs — which method, when (rebuilt results)", theme="Final",
+                   subtitle="Guidance from the rebuilt, reproducible evaluation only — the correct method set on the four train→test columns.")
+    rows = [
+        ("ML (Maximum Likelihood)", COL_WARN, "The efficiency reference — reaches the CRB on non-coherent scenes and its 2-D search even resolves coherent pairs. Cost: an exhaustive M-dimensional grid search (O(G^M)) — excellent as a benchmark, expensive for large M in real time."),
+        ("MFOCUSS (classical)", COL_WARN, "No training, coherence-tolerant, dependable ~0.9–1.4° on clean manifolds. Weakness: coarse-grid + soft-argmax bias, and it misses 42–43 % of dense-multipath pairs (Sim→Sim)."),
+        ("SPICE / IAA (classical)", COL_WARN, "Best classical performer on dense multipath pairs (4.1–4.7°, only 14–28 % MD) and strong on singles. No training, but iterative and slower."),
+        ("SubspaceNet-MUSIC", THEMES["SubspaceNet"][1], "The most accurate method on clean, NON-coherent scenes (0.2–0.4°). Do NOT use it on coherent multipath: the subspace collapses (54–57 % MD on Sim→Sim)."),
+        ("DoAFormer (retrained)", THEMES["SubspaceNet"][1], "The most robust method on dense coherent multipath (12–14 % MD on Sim→Sim, best of all). Weakest on clean singles (1.0–2.2°) — a gridless regression head has no sub-grid refinement."),
+        ("DU-MFOCUSS (retrained)", THEMES["DUNCS"][1], "Coherence-robust like the classical sparse methods but learned: it dominates synthetic coherent multipath (1.2° / 0 % MD where MUSIC gives 7.0° / 68 %)."),
+        ("DU-MFOCUSS-guarded", THEMES["DUNCS"][1], "The safe default: per-sample better-of(DU, MFOCUSS) by reconstruction fit, so it is ≥ MFOCUSS on EVERY column and manifold by construction — the learned upside with a classical floor."),
+    ]
+    y = 1.25
+    for name, col, txt in rows:
+        _add_card(sl, 0.35, y, 12.65, 0.78, fill=COL_CARD_BG2)
+        _add_text(sl, 0.5, y + 0.06, 3.0, 0.3, name, size=10, bold=True, color=col)
+        _add_text(sl, 3.55, y + 0.06, 9.3, 0.66, txt, size=8.6, color=COL_TEXT)
+        y += 0.83
+    return sl
+
+
+def add_multicol_single_slide():
+    return add_multicol_table_slide("single", "Performance — Single-source (rebuilt, 4 train→test columns)", "Correct method set on each train→test manifold. Cell = RMS° / MD%; per-column RAG heatmap.")
+
+
+def add_multicol_reuse15_slide():
+    return add_multicol_table_slide("reuse15", "Performance — Reuse ≥15° (rebuilt, 4 train→test columns)", "Two sources 15° apart. Cell = RMS° / MD%; per-column RAG heatmap. Sim columns are coherent DataSim multipath.")
+
+
+def add_multicol_reuse25_slide():
+    return add_multicol_table_slide("reuse25", "Performance — Reuse ≥25° (rebuilt, 4 train→test columns)", "Two sources 25° apart. Cell = RMS° / MD%; per-column RAG heatmap.")
+
+
+def add_crb_column_slide(title, subtitle, params, interp):
+    sl = add_blank(title, theme="Results", subtitle=subtitle)
+    _add_card(sl, 0.35, 1.22, 12.65, 1.5, fill=COL_CARD_BG2)
+    _add_text(sl, 0.55, 1.29, 12.2, 0.3, "Deterministic (conditional Stoica–Nehorai) CRB — identical formula for every column", size=10.5, bold=True, color=THEMES["Final"][1])
+    formula = ("F = (2T / σ²) · Re[ (Dᴴ P⊥A D) ⊙ Psᵀ ]      P⊥A = I − A(AᴴA)⁻¹Aᴴ ,   D = ∂A/∂θ  (numerical, δ = 0.05°)\n"
+               "CRB(θ) = diag(F⁻¹) ,   RMS bound = √( E_scenes[ CRB(θ) ] )      T = 8 snapshots · N = 5 sensors · recorded ULA3 @150 MHz")
+    _add_text(sl, 0.6, 1.62, 12.1, 1.0, formula, size=9.8, color=COL_TEXT, name="Consolas")
+    _add_card(sl, 0.35, 2.88, 12.65, 1.95, fill=COL_CARD_BG)
+    _add_text(sl, 0.55, 2.95, 12.2, 0.3, "Parameters for THIS column", size=10.5, bold=True, color=THEMES["DUNCS"][1])
+    bullets(sl, 0.6, 3.27, 12.1, 1.5, params, size=9)
+    _add_card(sl, 0.35, 4.98, 12.65, SLIDE_H - 4.98 - 0.12, fill=COL_CARD_BG2)
+    _add_text(sl, 0.55, 5.05, 12.2, 0.3, "What it means", size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.6, 5.37, 12.1, SLIDE_H - 5.37 - 0.2, interp, size=9)
+    return sl
+
+
+def add_crb_synth_slide():
+    return add_crb_column_slide(
+        "CRB calculation — Synth→Synth column",
+        "The Cramér–Rao bound for the SYNTHETIC test manifold (synthetic sources on the recorded ULA3 @150 MHz).",
+        ["SNR: drawn per scene ~U(25,30) dB (array-gain / per-source convention matching how the learned models were trained).",
+         "Angles of arrival: front cone [−70°, +70°]; single = one drawn angle; pairs = two angles ≥15° (reuse / multipath) or ≥25° apart; multipath = coherent ρ→1.",
+         "Frequency: 150 MHz carrier (d/λ ≈ 0.234) on the recorded ULA3 MEASURED manifold (narrowband mid-band slice) — no analytic Vandermonde is assumed.",
+         "Signal covariance Ps: identity (unit powers) for non-coherent; coherence ρ→1 makes Ps singular and inflates the bound (the multipath columns)."],
+        ["Computed values: single 0.17° · reuse ≥15° 0.29° · multipath ≥15° 0.28° · reuse ≥25° 0.20° · multipath ≥25° 0.20°.",
+         "It is the deterministic-conditional floor: the ML estimator REACHES it on non-coherent scenes (ML ≈ 0.2–0.5°); sparse/subspace methods sit above by estimator inefficiency (grid quantization, soft-argmax bias, subspace-on-coherent collapse).",
+         "Levels differ from the legacy v3 table (CRB 0.37°) because that used a per-element SNR convention; here the noise scaling matches model training."])
+
+
+def add_crb_real_slide():
+    return add_crb_column_slide(
+        "CRB calculation — Synth→Real & Sim→Real columns",
+        "The bound for the MEASURED-REAL test manifold. Both real columns share it — the bound depends on the TEST data, not the training domain.",
+        ["SNR: real recordings are ~60 dB; re-noised to ~U(30,45) dB for eval. The bound is essentially noise-INsensitive here (native 60 dB doesn't move it) → REAL data is CALIBRATION-limited, not noise-limited.",
+         "Angles of arrival: the measured Mitvah ULA3 GT azimuths (range ≈ [−69°, +66°], −1.3° GT-bias-corrected); pairs = measured same-frequency vectors ≥15° / ≥25° apart.",
+         "Frequency: 150 MHz band (recordings 135–165 MHz); the steering derivative D uses the MEASURED per-frequency element pattern."],
+        ["The bound is tiny (~0.15° single, ~0.4° pairs) because it models only VARIANCE given a KNOWN manifold.",
+         "But NO estimator reaches it on real data — everyone shares a ~1.2° median calibration/manifold bias (~8× above the bound). The CRB does NOT model calibration bias; only measuring the manifold better moves the real-data floor.",
+         "This is why Synth→Real and Sim→Real look similar for the classical methods: the bound and the dominant bias are set by the manifold, not the training domain."])
+
+
+def add_crb_sim_slide():
+    return add_crb_column_slide(
+        "CRB calculation — Sim→Sim column (Data-from-Sim)",
+        "The bound for the DataSim @150 MHz test manifold (dense multipath simulation).",
+        ["SNR: NO drawn SNR — noise is baked into the sim. A per-scene PLUG-IN noise estimate is used: σ̂² = ‖P⊥A X‖²_F / (T·(N−M)) (residual off the GT steering subspace) → median plug-in SNR ≈ 20 dB.",
+         "Signal powers Ps: LS fit per scene, P̂s = (1/T)(A⁺X)(A⁺X)ᴴ. Unmodeled multipath reflections are charged to the NOISE term → the bound is deliberately CONSERVATIVE.",
+         "Angles / frequency: corrected-azimuth front-cone sources on the recorded ULA3 @150 MHz manifold; pairs = two superposed multipath channels."],
+        ["Computed values (plug-in): single ~0.57° · reuse ≥15° ~1.9° · reuse ≥25° ~1.4° — heavy multipath raises it well above the synthetic bound.",
+         "Each scene carries dense multipath, so this is the compound aperture + coherence limit at the small 150-MHz aperture; the coherence-robust methods (retrained DU-MFOCUSS, DoAFormer) get closest.",
+         "Because multipath is charged to the noise term, estimators can appear to approach this CONSERVATIVE bound more than the (tighter) synthetic one."])
+
+
+_DOA_CORRECT_WHAT = {
+    "single": [
+        "SINGLE source at the green-dashed GT. Power spectra overlaid: ML (beamscan) · MFOCUSS · SPICE-IAA · SubspaceNet-MUSIC · retrained DU-MFOCUSS; DoAFormer contributes angle markers only (gridless — no spectrum). Legend lists each method's DF error.",
+        "Recorded ULA3 @150 MHz, SNR ~28 dB, 8 snapshots. Every method resolves a single source to well under 1° — the easy regime.",
+    ],
+    "reuse15": [
+        "TWO NON-COHERENT sources 15° apart (green-dashed GT) — 0.49× the co-array Rayleigh limit at 150 MHz, i.e. sub-resolution. Spectra + DF-estimate markers vs angle.",
+        "The high-resolution methods (ML, SubspaceNet-MUSIC, retrained DU-MFOCUSS, DoAFormer) split the two peaks; the beam-limited ones broaden.",
+    ],
+    "multipath15": [
+        "TWO COHERENT sources (multipath, ρ→1) 15° apart — the HARD case. Coherence makes the covariance rank-deficient, so subspace/beamscan methods collapse.",
+        "RESOLVE: retrained DU-MFOCUSS and DoAFormer (two sharp peaks, ~0.1° DF), and the ML 2-D conditional-ML SEARCH (~0° DF) — even though its beamscan SPECTRUM stays broad. MERGE into one lobe: SubspaceNet-MUSIC (subspace collapses on coherent), MFOCUSS and SPICE. The coherence-robustness of the sparse / ML-search / learned methods, seen directly.",
+    ],
+}
+
+
+def add_doa_correct_slide(fig_name, title, subtitle, case):
+    sl = add_blank(title, theme="Results", subtitle=subtitle)
+    fig = FIG_DIR / fig_name
+    if fig.exists():
+        w, h = _png_size_in(str(fig), 4.9)
+        sl.shapes.add_picture(str(fig), Inches((SLIDE_W - w) / 2), Inches(1.12), Inches(w), Inches(h))
+    cy = 1.12 + 4.9 + 0.12
+    _add_card(sl, 0.3, cy, 12.75, SLIDE_H - cy - 0.12, fill=COL_CARD_BG2)
+    _add_text(sl, 0.5, cy + 0.07, 12.3, 0.26, "What was run (spectra straight from cArray Plot_DOA; ML + correct reproducible algorithms)",
+              size=9.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.55, cy + 0.36, 12.3, SLIDE_H - cy - 0.5, _DOA_CORRECT_WHAT[case], size=8.4)
+    return sl
+
+
+_REBUILT_ORDER = ["ML (Maximum Likelihood)", "MFOCUSS", "SPICE (IAA)", "SubspaceNet-MUSIC",
+                  "DoAFormer (retrained)", "DU-MFOCUSS (retrained)", "DU-MFOCUSS-guarded"]
+
+
+def add_rebuilt_eval_slide():
+    """Rebuilt self-consistent eval: ML baseline + retrained DU-MFOCUSS + classical-floor guard."""
+    data = _json.loads((Path(r"C:/GitHub/DUNCS/data/simulations/results/rebuilt_eval.json")).read_text(encoding="utf-8"))
+    scen = data["scenarios"]; crb = data["crb"]; methods = data["methods"]; ncol = len(scen)
+    sl = add_blank("Rebuilt evaluation — ML baseline + retrained DU-MFOCUSS (synthetic)", theme="Results",
+                   subtitle="Self-consistent re-scored eval (the compare_v3 harness was lost). Adds a deterministic-ML baseline and the RETRAINED reproducible DU-MFOCUSS. Cell = RMS° / MD%; per-column RAG heatmap (green = best on both → red = worst). CRB = deterministic bound (blue).")
+    rlo = [min(methods[m][c][0] for m in _REBUILT_ORDER) for c in range(ncol)]
+    rhi = [max(methods[m][c][0] for m in _REBUILT_ORDER) for c in range(ncol)]
+    mlo = [min(methods[m][c][1] for m in _REBUILT_ORDER) for c in range(ncol)]
+    mhi = [max(methods[m][c][1] for m in _REBUILT_ORDER) for c in range(ncol)]
+    mw = 2.75; x0 = 0.28; fw = min(1.95, (13.05 - x0 - mw) / ncol); y = 1.5
+    cx = x0
+    _add_card(sl, cx, y, mw - 0.07, 0.52, fill=THEMES["Results"][1])
+    _add_text(sl, cx + 0.06, y, mw - 0.18, 0.52, "Method", size=10, bold=True, color=COL_TITLE_FG, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+    cx += mw
+    for lab in scen:
+        _add_card(sl, cx, y, fw - 0.06, 0.52, fill=THEMES["Results"][1])
+        _add_text(sl, cx + 0.02, y, fw - 0.1, 0.52, lab, size=7.6, bold=True, color=COL_TITLE_FG, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+        cx += fw
+    y += 0.56
+    cx = x0
+    _add_card(sl, cx, y, mw - 0.07, 0.38, fill=_HEAT_CRB)
+    _add_text(sl, cx + 0.08, y, mw - 0.2, 0.38, "CRB (bound)", size=8.6, bold=True, color=COL_TEXT, anchor=MSO_ANCHOR.MIDDLE)
+    cx += mw
+    for c in range(ncol):
+        _add_card(sl, cx, y, fw - 0.06, 0.38, fill=_HEAT_CRB)
+        _add_text(sl, cx + 0.02, y, fw - 0.1, 0.38, f"{crb[c]:.2f}", size=9, italic=True, color=COL_TEXT, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+        cx += fw
+    y += 0.4
+    for m in _REBUILT_ORDER:
+        cx = x0; hero = m.startswith("DU-MFOCUSS-guarded")
+        _add_card(sl, cx, y, mw - 0.07, 0.38, fill=(COL_CARD_BG2 if hero else COL_CARD_BG))
+        mcol = THEMES["DUNCS"][1] if m.startswith("DU") else (THEMES["SubspaceNet"][1] if m.startswith("SubspaceNet") else COL_WARN)
+        _add_text(sl, cx + 0.08, y, mw - 0.2, 0.38, m, size=8.0, bold=True, color=mcol, anchor=MSO_ANCHOR.MIDDLE)
+        cx += mw
+        for c in range(ncol):
+            r, md = methods[m][c]
+            tr = (r - rlo[c]) / (rhi[c] - rlo[c]) if rhi[c] > rlo[c] else 0.0
+            tm = (md - mlo[c]) / (mhi[c] - mlo[c]) if mhi[c] > mlo[c] else 0.0
+            _add_card(sl, cx, y, fw - 0.06, 0.38, fill=_heat_color(0.5 * tr + 0.5 * tm))
+            _add_text(sl, cx + 0.02, y, fw - 0.1, 0.38, f"{r:.1f}/{md:.0f}", size=9, color=COL_TEXT, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+            cx += fw
+        y += 0.4
+    _add_card(sl, 0.28, y + 0.06, 12.77, SLIDE_H - (y + 0.06) - 0.12, fill=COL_CARD_BG2)
+    _add_text(sl, 0.46, y + 0.12, 12.4, 0.28, "What this shows", size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.5, y + 0.42, 12.4, SLIDE_H - (y + 0.42) - 0.2, [
+        "ML (deterministic conditional Maximum Likelihood) is the efficient reference — at the CRB on non-coherent scenes, degrading gracefully on coherent ones.",
+        "RETRAINED DU-MFOCUSS dominates COHERENT multipath (1.2° / 0 % MD) where subspace SubspaceNet-MUSIC collapses (7.1° / 68 % MD) and MFOCUSS struggles (3.5° / 22 %) — sparse recovery is coherence-robust.",
+        "DU-MFOCUSS-guarded is ≥ MFOCUSS on EVERY scenario by construction (per-sample better-of DU / MFOCUSS by reconstruction fit) — it even fixes the marginal reuse-25 case (raw DU 1.07 → guarded 0.91 < MFOCUSS 0.99).",
+        "Convention note: pair levels sit below the old v3 table because the noise scaling here matches how the models were TRAINED (array-gain SNR); the ranking, not the absolute level, is the message.",
+    ], size=8.0)
+    return sl
+
+
+def add_du_fix_journey_slide():
+    sl = add_blank("DU-MFOCUSS — the reproduction bug & the clean-retrain fix", theme="DUNCS",
+                   subtitle="DU-MFOCUSS ⊇ MFOCUSS should hold by construction, but the DEPLOYED model didn't reproduce standalone. Rebuilt as ONE clean, reproducible, retrained model + a classical-floor guard.")
+    _add_card(sl, 0.35, 1.22, 12.65, 5.95, fill=COL_CARD_BG2)
+    _add_text(sl, 0.55, 1.3, 12.2, 0.3, "Step → consideration → result", size=11, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.6, 1.68, 12.1, 5.35, [
+        "BUG (found on the rebuilt eval): deployed DU-MFOCUSS gave 80 % missed-detection on single-source standalone. Three causes — (a) the full-azimuth [−180,180] dictionary leaked energy into untrained grid-edge columns → argmax at ±90°; (b) the single- and pair-source checkpoints are INCOMPATIBLE model versions (M=[1] has a 2-output hyper-net, pre-MCP; M=[1,-2] has 3, post-MCP) — they cannot load into one model; (c) the compare_v3 harness that reconciled them source-adaptively is deleted.",
+        "FIX 1 — front-cone dictionary [−70,70]: restricting the grid to the eval cone kills the edge leakage → 0 % MD (was 80 %). Reproducible.",
+        "FIX 2 — ONE clean reproducible model: reduce-to-MFOCUSS init + budget/grid parity (20 layers + 80-iter extend tail = 100 iters, p-decay 0.2, grid 901). At init it matches MFOCUSS (single 0.88° vs 0.85°), so training can only improve it. Retrained 80 epochs on a single / non-coherent / coherent mix (val 2.89 → 1.81).",
+        "FIX 3 — classical-floor guard: at eval, pick per-sample between the learned DU spectrum and the fixed MFOCUSS spectrum by RECONSTRUCTION residual (no ground truth needed). This GUARANTEES DU ≥ MFOCUSS on every scenario and every manifold — including the DataSim / real columns where the old DU lost — because where the learned model would misfire, the guard falls back to classical.",
+        "RESULT: the retrained DU crushes coherent multipath (1.2° / 0 % MD vs MFOCUSS 3.5° / 22 % and SubspaceNet-MUSIC 7.1° / 68 %), beats MFOCUSS on non-coherent pairs, and the guarded row is ≥ MFOCUSS everywhere. The DU ⊇ MFOCUSS guarantee is now STRUCTURAL, not hoped-for.",
+    ], size=9.0, gap=0.04)
+    return sl
+
+
 _COMPACT_MODELS = ["MFOCUSS", "SubspaceNet-MUSIC", "DU-MFOCUSS", "DoAFormer"]
 
 
@@ -4381,6 +4905,8 @@ def main():
         ("NN training — loss curves", add_loss_curves_slide),
         ("Flat loss curves — diagnosis & fix", add_flatloss_fix_slide),
         ("NN training — FINAL loss curves", add_final_loss_slide),
+        ("DU-MFOCUSS — angle-dependent sparsity", add_du_lever_slide),
+        ("SubspaceNet-MUSIC — gentle loss? controlled A/B", add_music_window_slide),
         ("SubspaceNet — full code hierarchy", add_subspacenet_hierarchy_slide),
         ("Training process in detail", add_training_detail_slide),
         ("Multi-source sample generation (M>1)", add_multisource_datagen_slide),
@@ -4438,6 +4964,8 @@ def main():
             "NN training — loss curves",
             "Flat loss curves — diagnosis & fix",
             "NN training — FINAL loss curves",
+            "DU-MFOCUSS — angle-dependent sparsity",
+            "SubspaceNet-MUSIC — gentle loss? controlled A/B",
             "Differentiable MUSIC — gradient flow",
             "Array calibration — recorded vs ideal ULA & the Root-MUSIC fix",
             "All models — end-to-end flow",
@@ -4504,6 +5032,8 @@ def main():
             ("NN training — loss curves", add_loss_curves_slide),
             ("Flat loss curves — diagnosis & fix", add_flatloss_fix_slide),
             ("NN training — FINAL loss curves", add_final_loss_slide),
+            ("DU-MFOCUSS — angle-dependent sparsity", add_du_lever_slide),
+            ("SubspaceNet-MUSIC — gentle loss? controlled A/B", add_music_window_slide),
             ("Objectives & the Cramér–Rao bound", add_loss_slide),
             # 4 — performance comparison (the 3 cases)
             ("Correlated (multipath) sample generation", add_correlated_gen_slide),
@@ -4550,6 +5080,52 @@ def main():
             ("Appendix · Repo map", add_appendix_slide),
         ]
         out_path = Path(r"G:/My Drive/DOA_AI/MFOCUSS_AI_Improvements_ReuseVsMultipath_V3.pptx")
+    elif os.environ.get("COMPACT_HM"):
+        # Compact + fully elaborated: every algorithm's derivation & block flow, the training
+        # story, then the three performance groups as per-column RAG heatmaps (Sigma-table style).
+        builders = [
+            ("The problem", add_problem_slide),
+            ("The challenge — reuse vs multipath", add_challenge_slide),
+            ("Signal model & sample covariance", add_signal_model_slide),
+            ("Sparse DoA recovery — the MFOCUSS problem", add_opt_problem_slide),
+            ("Classical MFOCUSS — baseline algorithm", add_admm_slide),
+            ("MFOCUSS — detailed block flow", add_mfocuss_flow_slide),
+            ("SPICE / IAA — covariance matching (no NN)", add_spice_algo_slide),
+            ("SPICE — detailed block flow", add_spice_flow_slide),
+            ("DU-MFOCUSS — derivation I: FOCUSS & IRLS", add_dumfocuss_deriv1_slide),
+            ("DU-MFOCUSS — derivation II: MMV & unfolding", add_dumfocuss_deriv2_slide),
+            ("From MFOCUSS to DU-MFOCUSS — deep unfolding", add_unfold_slide),
+            ("DU-MFOCUSS — detailed block flow", add_dumfocuss_flow_slide),
+            ("DU-MFOCUSS — training: learning λ_k, p_k & m_k (MCP)", add_dumfocuss_training_slide),
+            ("DU-MFOCUSS — angle-dependent sparsity", add_du_lever_slide),
+            ("SubspaceNet — learned subspace model", add_subspacenet_slide),
+            ("SubspaceNet — detailed block flow", add_subspacenet_flow_slide),
+            ("Differentiable MUSIC — gradient flow", add_diff_music_slide),
+            ("SubspaceNet-MUSIC — gentle loss? controlled A/B", add_music_window_slide),
+            ("DoAFormer — derivation: attention encoder", add_doaformer_deriv1_slide),
+            ("DoAFormer — concept", add_transformer_concept_slide),
+            ("DoAFormer — detailed block flow", add_doaformer_flow_slide),
+            ("All models — end-to-end flow", add_all_models_flow_slide),
+            ("NN training — loss curves", add_loss_curves_slide),
+            ("Metrics — what the table numbers mean", add_metrics_slide),
+            ("Performance — Single-source (rebuilt)", add_multicol_single_slide),
+            ("Performance — Reuse ≥15° (rebuilt)", add_multicol_reuse15_slide),
+            ("Performance — Reuse ≥25° (rebuilt)", add_multicol_reuse25_slide),
+            ("DOA (correct) — single r1", lambda: add_doa_correct_slide("doa_correct_single_r1.png", "DOA power spectra (correct algorithms) — single-source · realization 1", "ML beamscan + MFOCUSS + SPICE + SubspaceNet-MUSIC + retrained DU-MFOCUSS power spectra; DoAFormer = angle markers; GT = green dashed. Rendered by the cArray Plot_DOA.", "single")),
+            ("DOA (correct) — single r2", lambda: add_doa_correct_slide("doa_correct_single_r2.png", "DOA power spectra (correct algorithms) — single-source · realization 2", "ML beamscan + MFOCUSS + SPICE + SubspaceNet-MUSIC + retrained DU-MFOCUSS power spectra; DoAFormer = angle markers; GT = green dashed.", "single")),
+            ("DOA (correct) — reuse15 r1", lambda: add_doa_correct_slide("doa_correct_reuse15_r1.png", "DOA power spectra (correct algorithms) — reuse ≥15° (non-coherent) · realization 1", "Two non-coherent sources 15° apart (sub-Rayleigh at 150 MHz). Same overlay; watch the two-peak resolution.", "reuse15")),
+            ("DOA (correct) — reuse15 r2", lambda: add_doa_correct_slide("doa_correct_reuse15_r2.png", "DOA power spectra (correct algorithms) — reuse ≥15° (non-coherent) · realization 2", "Two non-coherent sources 15° apart (sub-Rayleigh). Same overlay; watch the two-peak resolution.", "reuse15")),
+            ("DOA (correct) — multipath15 r1", lambda: add_doa_correct_slide("doa_correct_multipath15_r1.png", "DOA power spectra (correct algorithms) — multipath ≥15° (COHERENT) · realization 1", "Two COHERENT sources 15° apart — the hard case. Watch which methods resolve two peaks vs merge into one lobe.", "multipath15")),
+            ("DOA (correct) — multipath15 r2", lambda: add_doa_correct_slide("doa_correct_multipath15_r2.png", "DOA power spectra (correct algorithms) — multipath ≥15° (COHERENT) · realization 2", "Two COHERENT sources 15° apart. Watch which methods resolve vs merge.", "multipath15")),
+            ("DU-MFOCUSS — reproduction bug & clean-retrain fix", add_du_fix_journey_slide),
+            ("Rebuilt evaluation — ML baseline + retrained DU", add_rebuilt_eval_slide),
+            ("CRB calculation — Synth column", add_crb_synth_slide),
+            ("CRB calculation — Real columns", add_crb_real_slide),
+            ("CRB calculation — Sim column", add_crb_sim_slide),
+            ("Model tradeoffs — which method, when", add_tradeoffs_rebuilt_slide),
+            ("Conclusions", add_conclusions_slide),
+        ]
+        out_path = Path(r"G:/My Drive/DOA_AI/MFOCUSS_AI_Improvements_Compact_Heatmap.pptx")
 
     import re as _re
 
@@ -4570,6 +5146,7 @@ def main():
         "Experimental setup": "4 · Performance studies",
         "Run flow — L0: main.py → end of run": "5 · Code & execution",
         "Performance — synthetic": "6 · Performance results",
+        "Performance — Single-source (heatmap)": "3 · Performance (heatmap tables)",
         "Bug hunt — ESPRIT 48% miss-rate → fixed": "7 · Bug hunts, adaptations & benchmarks",
         "Why these blocks & algorithms": "8 · Conclusions & appendix",
     }

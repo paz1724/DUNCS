@@ -32,6 +32,10 @@ class SystemModelParams:
     freq_values: list = field(default_factory=lambda: [0, 500])
     antenna_pattern: bool = True
     antenna_pattern_file: Optional[str] = "C:\\GitHub\\Hof\\Auxiliary\\Data\\Steering\\ULA3\\SteeringData_Mid.mat"  # Real measured ULA3 steering data (Mid band: 136-550 MHz). Low=30-136, High=550-1600.
+    carrier_freq_mhz: float = 150.0         # Narrowband carrier: which recorded frequency slice to use.
+                                            # Must be set explicitly — the loader previously defaulted to the
+                                            # MIDDLE of the recorded band (343 MHz on the Mid file), silently
+                                            # evaluating a 2.3x larger electrical aperture than the documented 150 MHz.
     doa_range: list = field(default_factory=lambda: (-60, 60))
     min_gap: int = 10
 

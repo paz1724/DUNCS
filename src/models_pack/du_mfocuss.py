@@ -19,6 +19,7 @@ from src.models_pack.parent_model import ParentModel
 from src.system_model import SystemModel
 from src.metrics.criterions import set_criterions
 from src.utils import device
+from src.models_pack.mfocuss import _unit_norm_cols
 
 
 class DUMFOCUSS(ParentModel):
@@ -35,6 +36,7 @@ class DUMFOCUSS(ParentModel):
                  ang_reg_weight: float = 1e-2,       # ||_ang_p||^2 penalty (stabilizes the profile)
                  lam_multi_scale: float = 0.02,
                  peak_lim_deg: float = None,
+                 normalize_dict: bool = True,   # unit-norm atoms; see mfocuss._unit_norm_cols
                  fine_cols_per_180deg: int = 901,
                  p_init_floor: float = 0.01,
                  p_init_amp: float = 0.98,
@@ -149,14 +151,16 @@ class DUMFOCUSS(ParentModel):
         grid_rad = np.deg2rad(np.linspace(lo, hi, grid_size))
         A = np.asarray(system_model.steering_vec(grid_rad))      # (N, G) coarse
         self.register_buffer("grid", torch.as_tensor(grid_rad, dtype=torch.float64))
-        self.register_buffer("A", torch.as_tensor(A, dtype=torch.complex128))
+        self.register_buffer("A", _unit_norm_cols(torch.as_tensor(A, dtype=torch.complex128),
+                                                  normalize_dict))
         # Fine (single-source) grid: preserve angular density (~0.2 deg/col at the ±90 default)
         # across whatever range was requested, so full-azimuth grids stay well-resolved.
         self.grid_size_fine = max(int(grid_size), int(round(self.fine_cols_per_180deg * abs(hi - lo) / 180.0)))
         grid_rad_f = np.deg2rad(np.linspace(lo, hi, self.grid_size_fine))
         Af = np.asarray(system_model.steering_vec(grid_rad_f))   # (N, Gf) fine (single-source precision)
         self.register_buffer("grid_fine", torch.as_tensor(grid_rad_f, dtype=torch.float64))
-        self.register_buffer("A_fine", torch.as_tensor(Af, dtype=torch.complex128))
+        self.register_buffer("A_fine", _unit_norm_cols(torch.as_tensor(Af, dtype=torch.complex128),
+                                                       normalize_dict))
         self._A_use = None          # active dictionary/grid (set per-forward by source count)
         self._grid_use = None
 

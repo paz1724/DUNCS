@@ -1,6 +1,13 @@
 import numpy as np
 from scipy import interpolate
 
+# Narrowband carrier used to select a slice of the RECORDED multi-frequency steering manifold.
+# The ULA3 "Mid" file spans 136-550 MHz; this study is the 150 MHz band. Previously the slice was
+# taken as Nfreqs//2 (= 343 MHz), which silently evaluated a 2.3x larger ELECTRICAL aperture
+# (aperture/lambda 1.15 -> 2.63) and flattered every resolution result. Override per-run with
+# system_model.carrier_freq_mhz.
+NARROWBAND_CARRIER_MHZ = 150.0
+
 
 class SteeringVectorGenerator:
     _instance = None  # shared across all calls
@@ -61,7 +68,8 @@ class SteeringVectorGenerator:
 
         if pattern_data is not None:
             return self._generate_antenna_pattern(
-                theta, pattern_data, f=f, signal_type=self.params.signal_type
+                theta, pattern_data, f=f, signal_type=self.params.signal_type,
+                carrier_freq_mhz=getattr(self.params, "carrier_freq_mhz", NARROWBAND_CARRIER_MHZ)
             )
 
         if field_type == "far":
@@ -163,7 +171,8 @@ class SteeringVectorGenerator:
         return np.exp(2 * -1j * np.pi * time_delay)
 
     @staticmethod
-    def _generate_antenna_pattern(theta, antenna_pattern_data, f=1, signal_type="NarrowBand"):
+    def _generate_antenna_pattern(theta, antenna_pattern_data, f=1, signal_type="NarrowBand",
+                                  carrier_freq_mhz=NARROWBAND_CARRIER_MHZ):
         """
         Generate steering vector from antenna pattern data.
         
@@ -194,7 +203,7 @@ class SteeringVectorGenerator:
         # Check if it's the new dictionary format
         if isinstance(antenna_pattern_data, dict):
             return SteeringVectorGenerator._generate_antenna_pattern_dict(
-                theta_deg, antenna_pattern_data, f, signal_type
+                theta_deg, antenna_pattern_data, f, signal_type, carrier_freq_mhz
             )
         else:
             # Legacy tuple format for backward compatibility
@@ -203,7 +212,8 @@ class SteeringVectorGenerator:
             )
     
     @staticmethod
-    def _generate_antenna_pattern_dict(theta_deg, pattern_dict, f=1, signal_type="NarrowBand"):
+    def _generate_antenna_pattern_dict(theta_deg, pattern_dict, f=1, signal_type="NarrowBand",
+                                       carrier_freq_mhz=NARROWBAND_CARRIER_MHZ):
         """Generate steering vector from dictionary format (frequency-dependent).
 
         Selects a frequency slice then linearly interpolates the complex pattern in azimuth.
@@ -226,8 +236,9 @@ class SteeringVectorGenerator:
         
         # Map frequency f to frequency index
         if signal_type.startswith("NarrowBand"):
-            # For narrowband, use middle frequency or first frequency
-            freq_idx = Nfreqs // 2 if Nfreqs > 1 else 0
+            # Narrowband: take the recorded slice NEAREST the configured carrier (default 150 MHz).
+            # Was Nfreqs//2 (mid-band = 343 MHz on the ULA3 Mid file) — a silent 2.3x aperture error.
+            freq_idx = int(np.argmin(np.abs(np.asarray(freq, dtype=float) - float(carrier_freq_mhz)))) if Nfreqs > 1 else 0
         else:
             # For broadband, map f to frequency index
             # f might be negative (for negative frequencies in FFT)
