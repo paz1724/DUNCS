@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from src.models_pack.parent_model import ParentModel
+from src.models_pack.parent_model import ParentModel, local_ml_refine
 from src.system_model import SystemModel
 from src.metrics.criterions import set_criterions
 from src.utils import device
@@ -27,7 +27,18 @@ class DoAFormer(ParentModel):
     def __init__(self, system_model: SystemModel, d_model: int = 64, nhead: int = 4,
                  num_encoder_layers: int = 3, num_decoder_layers: int = 2,
                  dim_feedforward: int = 128, dropout: float = 0.1, criterion: str = "rmspe",
-                 input_mode: str = "cov"):
+                 input_mode: str = "cov",
+                 refine_min_sep_deg: float = 60.0,  # refine a source only if the nearest neighbour is
+                                                   # farther than this. MUST exceed the array Rayleigh
+                                                   # limit (~50 deg here) -- inside one beamwidth the
+                                                   # beamscan cannot separate a pair and refining it
+                                                   # destroys the coarse estimator's resolution.
+                 refine_deg: float = 12.0,     # local ML refinement half-window (0/None disables).
+                                               # A gridless regression head has no sub-grid refinement, so
+                                               # its error FLOORS at ~1.07 deg regardless of SNR (measured
+                                               # 5-40 dB) -- model-capacity bias, not noise. Refining
+                                               # locally: 1.27 -> 0.44 deg (CRLB 0.39).
+                 refine_grid: int = 2801):     # fine grid used only by that refinement
         """Initializes the DoAFormer model.
 
         Args:
@@ -71,6 +82,17 @@ class DoAFormer(ParentModel):
         self.angle_head = nn.Linear(d_model, 1)
         self.count_head = nn.Linear(d_model, self.Q)     # classifies #sources in {1..Q}
         self.count_loss = nn.CrossEntropyLoss()
+        self.refine_deg = refine_deg
+        self.refine_min_sep_deg = refine_min_sep_deg
+        if refine_deg:                              # fine dictionary used ONLY by the refinement stage
+            lo, hi = system_model.params.doa_range
+            g = np.deg2rad(np.linspace(float(lo), float(hi), int(refine_grid)))
+            Af = np.asarray(system_model.steering_vec(g))
+            # persistent=False: these are DERIVED from the system model, not learned. Keeping them
+            # out of the state_dict means existing checkpoints still load strictly (a persistent
+            # buffer here shows up as a MISSING key and trips the "partially random model" guard).
+            self.register_buffer("refine_grid_rad", torch.as_tensor(g, dtype=torch.float64), persistent=False)
+            self.register_buffer("refine_A", torch.as_tensor(Af, dtype=torch.complex128), persistent=False)
 
     def get_model_params(self):
         """Returns a short string summarizing the model's hyper-parameters.
@@ -127,7 +149,13 @@ class DoAFormer(ParentModel):
         angles = torch.tanh(self.angle_head(decoded).squeeze(-1)) * self.angle_scale  # [B, M]
         count_logits = self.count_head(memory.mean(dim=1))                       # [B, Q]
         source_estimation = (count_logits.argmax(dim=1) + 1).float()             # [B]
-        return angles.to(torch.float64), source_estimation, count_logits
+        angles = angles.to(torch.float64)
+        if self.refine_deg and not self.training:   # eval-only: keep training end-to-end differentiable
+            angles = local_ml_refine(x, angles, self.refine_A, self.refine_grid_rad,
+                                     (self.refine_A.conj() * self.refine_A).sum(dim=0).real,
+                                     float(np.deg2rad(self.refine_deg)),
+                                     float(np.deg2rad(self.refine_min_sep_deg)))
+        return angles, source_estimation, count_logits
 
     def _count_accuracy(self, sources_num, source_estimation):
         """Counts how many estimated source counts match the true count.
