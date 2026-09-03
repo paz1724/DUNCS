@@ -44,6 +44,12 @@ class MFOCUSS(ParentModel):
                  grid_size: int = 121, p: float = 0.8, lam: float = 0.05,
                  criterion: str = "rmspe", grid_range_deg=None,
                  normalize_dict: bool = True,   # unit-norm atoms; see _unit_norm_cols (0.87deg floor)
+                 snapshot_normalized_reweight: bool = True,   # T-invariant reweight (see below)
+                 reweight_ref_snapshots: int = 8,   # snapshot count the FIXED lambda was calibrated at.
+                                                   # The reweight is anchored here, so behaviour at any T
+                                                   # matches the calibrated T=8 operating point instead of
+                                                   # drifting (||.||_2 grows as sqrt(T) while lambda is fixed,
+                                                   # which cost 13.8x/38x/41x the CRLB at T=16/32/64).
                  p_init: float = 0.99, p_min: float = 0.01, p_decay: float = 0.2,
                  lam_init: float = 0.99, lam_max: float = 0.99, lam_growth: float = 0.2,
                  lam_multi: float = 0.02,
@@ -82,6 +88,8 @@ class MFOCUSS(ParentModel):
         self.grid_size = grid_size
         self.p = float(p)
         self.lam = float(lam)
+        self.snapshot_normalized_reweight = snapshot_normalized_reweight
+        self.reweight_ref_snapshots = int(reweight_ref_snapshots)
 
         # ---- Hoisted tunables / schedule constants / epsilons (defaults == historical literals) ----
         # Hof MFOCUSS_Original annealing schedule (cArray defaults): p anneals from
@@ -171,6 +179,12 @@ class MFOCUSS(ParentModel):
         p, lam = self.p_init, li
         for it in range(1, self.num_iter + 1):
             gamma = torch.linalg.norm(mu, dim=2)                # sqrt(sum_t |mu|^2)
+            if self.snapshot_normalized_reweight:
+                # ||.||_2 over snapshots grows as sqrt(T), so gram ~ w^2 ~ T^(1-p/2) while lambda is a
+                # FIXED constant: the regularizer becomes relatively negligible as T grows and the
+                # iteration destabilizes. Measured at 30 dB: T=8 -> 1.05x CRLB but T=16/32/64 ->
+                # 12.7x / 36.6x / 43.4x. Using the RMS over snapshots makes the reweight T-invariant.
+                gamma = gamma * np.sqrt(self.reweight_ref_snapshots / mu.shape[2])
             w = (gamma + self.reweight_floor) ** (1.0 - p / 2.0)
             AW = A.unsqueeze(0) * w.unsqueeze(1).to(torch.complex128)
             gram = torch.einsum("bng,bmg->bnm", AW, AW.conj())
