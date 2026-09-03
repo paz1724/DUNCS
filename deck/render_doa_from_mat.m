@@ -10,10 +10,10 @@ function [] = render_doa_from_mat()
 %  Renders each with the real Plot_DOA and saves a PNG.
 
 set(0, 'DefaultFigureVisible', 'off');
-indir = 'C:\Users\Daniel\AppData\Local\Temp\claude\c--GitHub-DUNCS\64e8dd82-9435-48e6-a804-bb899502d269\scratchpad\doa_png2';
-cases = {'single', 'reuse15'};
+indir = 'C:\Users\Daniel\AppData\Local\Temp\claude\c--GitHub-DUNCS\64e8dd82-9435-48e6-a804-bb899502d269\scratchpad\doa_png4';
+cases = {'single', 'reuse15', 'multipath15'};
 for ci = 1:numel(cases)
-    for r = 1:3
+    for r = 1:2
         mat = fullfile(indir, sprintf('results_%s_r%d.mat', cases{ci}, r));
         if ~exist(mat, 'file'); fprintf('missing %s\n', mat); continue; end
         S = load(mat);

@@ -14,7 +14,7 @@ from src.models import ModelGenerator
 from src.utils import device
 
 torch.set_grad_enabled(False)
-OUT = r"C:/Users/Daniel/AppData/Local/Temp/claude/c--GitHub-DUNCS/64e8dd82-9435-48e6-a804-bb899502d269/scratchpad/doa_png3"
+OUT = r"C:/Users/Daniel/AppData/Local/Temp/claude/c--GitHub-DUNCS/64e8dd82-9435-48e6-a804-bb899502d269/scratchpad/doa_png4"
 os.makedirs(OUT, exist_ok=True)
 GRID = np.round(np.arange(-90.0, 90.0 + 1e-6, 0.1), 4)
 cfg = load_simulation_config("src/config/subspaceNet.yaml"); cfg.system_model.M = 2
@@ -61,12 +61,12 @@ def build(mt, pr, wf):
     m = (ModelGenerator().set_model_type(mt).set_system_model(SM).set_model_params(pr).set_model()).model.to(device).eval()
     if wf and os.path.exists("data/weights/" + wf): m.load_state_dict(torch.load("data/weights/" + wf, map_location=device), strict=False)
     return m
-mfo = build("MFOCUSS", dict(num_iterations=100, grid_size=901, p=0.8, lam=0.05, grid_range_deg=[-180, 180]), None)
+mfo = build("MFOCUSS", dict(num_iterations=100, grid_size=901, p=0.8, lam=0.05, grid_range_deg=[-70, 70]), None)
 spi = build("SPICE", dict(num_iterations=100, grid_size=901), None)
-mus = build("SubspaceNet", dict(tau=7, diff_method="music_1D"), "SubspaceNet_tau=7_diff_method=music_angle_N=5_M=[1,-2]_T=8_NarrowBand_SNR=30_Far_field_non-coherent_eta=0.0_sv_var=0.0")
-du = build("DUMFOCUSS", dict(num_iterations=20, grid_size=901, grid_range_deg=[-70, 70], p_init_decay=0.2, peak_lim_deg=70.0, angle_dependent_reg=True), "DUMFOCUSS_clean_K20_grid901_frontcone_N=5_T=8.pt")
+mus = build("SubspaceNet", dict(tau=7, diff_method="music_1D"), "music_150MHz_synth.pt")
+du = build("DUMFOCUSS", dict(num_iterations=20, grid_size=901, grid_range_deg=[-70, 70], p_init_decay=0.2, peak_lim_deg=70.0, angle_dependent_reg=True), "du_150MHz_synth.pt")
 du.extend_iters = 80
-dfm = build("DoAFormer", dict(d_model=96, nhead=4, num_encoder_layers=3, num_decoder_layers=2, dim_feedforward=192, input_mode="both"), "DoAFormer_clean_dmodel96_Q2_synth_N=5_T=8.pt")
+dfm = build("DoAFormer", dict(d_model=96, nhead=4, num_encoder_layers=3, num_decoder_layers=2, dim_feedforward=192, input_mode="both"), "doaformer_150MHz_synth.pt")
 mg_deg = np.rad2deg(mus.diff_method.angels.detach().cpu().numpy())
 
 def specs(x, M):
