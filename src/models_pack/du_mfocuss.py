@@ -37,6 +37,23 @@ class DUMFOCUSS(ParentModel):
                  lam_multi_scale: float = 0.02,
                  peak_lim_deg: float = None,
                  normalize_dict: bool = True,   # unit-norm atoms; see mfocuss._unit_norm_cols
+                 use_mcp: bool = False,         # MCP de-bias term. OFF by default: the reweight
+                                                # w *= (1 + m_k*rn) BOOSTS already-strong atoms (positive
+                                                # feedback). Measured at 150 MHz it collapses the spectrum
+                                                # onto a GRID-EDGE atom on ~3% of single-source scenes
+                                                # (GT 62 deg -> pinned at the +70 deg edge), taking single
+                                                # RMS 0.41 -> 1.37 while the MEDIAN is unchanged. Disabling
+                                                # it improved DU on EVERY scenario.
+                 eval_parabolic: bool = True,   # EVAL readout: hard peak + parabolic sub-grid refinement
+                                                # instead of the wide training soft-argmax window.
+                 snapshot_normalized_reweight: bool = True,   # T-invariant reweight (see below)
+                 reweight_ref_snapshots: int = 1,   # DU LEARNS lambda per layer, so it needs no calibration
+                                                   # anchor: ref=1 is the pure RMS-over-snapshots reweight
+                                                   # (fully T-invariant) and is the convention these weights
+                                                   # were trained under. Classical MFOCUSS uses ref=8 instead,
+                                                   # because its FIXED lambda was calibrated at T=8 and the
+                                                   # rescaling would otherwise over-regularize and merge pairs
+                                                   # (measured: multipath MD 33% -> 75%).
                  fine_cols_per_180deg: int = 901,
                  p_init_floor: float = 0.01,
                  p_init_amp: float = 0.98,
@@ -103,6 +120,10 @@ class DUMFOCUSS(ParentModel):
         # into the untrained |theta|>~82 edge columns -> the greedy argmax lands there (44% of samples at
         # |a|>=88). Masking |theta|>peak_lim_deg before peak-picking recovers the true interior peak (44->8% MD).
         self.peak_lim_deg = peak_lim_deg
+        self.eval_parabolic = eval_parabolic
+        self.use_mcp = use_mcp
+        self.snapshot_normalized_reweight = snapshot_normalized_reweight
+        self.reweight_ref_snapshots = int(reweight_ref_snapshots)
         self.fine_cols_per_180deg = fine_cols_per_180deg    # fine-grid density (columns per 180 deg span)
         self.p_init_floor = p_init_floor                    # p-schedule init: floor + amp * exp(-decay * k)
         self.p_init_amp = p_init_amp
@@ -273,6 +294,12 @@ class DUMFOCUSS(ParentModel):
         for k in range(total_iters):
             kk = min(k, self.num_iter - 1)                        # extension reuses the last layer
             row_norm = torch.linalg.norm(s, dim=2)                # [B, G] real
+            if getattr(self, 'snapshot_normalized_reweight', True):
+                # Same T-scaling defect as classical MFOCUSS: ||.||_2 over snapshots grows as
+                # sqrt(T) while lambda is fixed, so the regularizer vanishes relatively as T grows
+                # (MFOCUSS measured 1.05x CRLB at T=8 but 13.8x/38x/41x at T=16/32/64).
+                # RMS-over-snapshots makes the reweight T-invariant; T=8 behaviour is unchanged.
+                row_norm = row_norm * np.sqrt(self.reweight_ref_snapshots / s.shape[2])
 
             if getattr(self, "adaptive_hyper", False):
                 # Input-adaptive (lambda_k, p_k): correct the learned per-layer schedule by a
@@ -308,6 +335,8 @@ class DUMFOCUSS(ParentModel):
                 p_g = (p_k + self.ang_p_scale * p_prof).clamp(1e-3, 2.0 - 1e-3)          # [B, G] angle-dependent p
             else:
                 p_g = p_k
+            if not getattr(self, "use_mcp", False):
+                m_k = torch.zeros_like(m_k)      # MCP disabled -> plain FOCUSS reweighting
             w = (row_norm + self.reweight_floor) ** (1.0 - p_g / 2.0) * (1.0 + m_k * rn)   # floor matches MFOCUSS
 
             AW = A.unsqueeze(0) * w.unsqueeze(1).to(torch.complex128)   # [B, N, G]
@@ -357,6 +386,26 @@ class DUMFOCUSS(ParentModel):
             mask = (grid_idx.unsqueeze(0) - idx.unsqueeze(1)).abs() <= supp      # [B, G]
             work = work.masked_fill(mask, float("-inf"))
         out = torch.zeros(B, source_number, dtype=torch.float64, device=spectrum.device)
+        if (not self.training) and getattr(self, "eval_parabolic", True) and G >= 3:
+            # EVAL readout: hard peak + 3-point parabolic sub-grid interpolation.
+            # The training readout averages the spectrum over a +/-pick_half_frac*G window
+            # (~+/-3.4 deg at G=901). That window is what makes the readout differentiable, but at
+            # inference it drags the estimate whenever a secondary lobe falls inside it: measured on
+            # single-source, DU matched MFOCUSS for 97% of scenes yet a 3.3% outlier tail (p99 6.7
+            # deg) pushed RMS to 1.23 vs MFOCUSS 0.38. A hard peak plus the standard parabolic
+            # refinement keeps sub-grid precision without averaging across neighbouring lobes.
+            step = (grid[1] - grid[0]).to(torch.float64)
+            for j, idx in enumerate(centers):
+                c = idx.clamp(1, G - 2)
+                y0 = torch.gather(spectrum, 1, (c - 1).unsqueeze(1)).squeeze(1).to(torch.float64)
+                y1 = torch.gather(spectrum, 1, c.unsqueeze(1)).squeeze(1).to(torch.float64)
+                y2 = torch.gather(spectrum, 1, (c + 1).unsqueeze(1)).squeeze(1).to(torch.float64)
+                den = (y0 - 2.0 * y1 + y2)
+                delta = torch.where(den.abs() > self.rn_eps, 0.5 * (y0 - y2) / den,
+                                    torch.zeros_like(den))
+                delta = delta.clamp(-1.0, 1.0)            # a valid interior peak lies within one cell
+                out[:, j] = grid[c].to(torch.float64) + delta * step
+            return out
         for j, idx in enumerate(centers):
             win = (idx.unsqueeze(1) + offsets).clamp(0, G - 1)                   # [B, W]
             vals = torch.gather(spectrum, 1, win)                               # [B, W]
@@ -440,12 +489,24 @@ class DUMFOCUSS(ParentModel):
         K = max(self.pick_min_cols, int(round(np.deg2rad(win_deg) / step)))
         offsets = torch.arange(-K, K + 1, device=spec_f.device)
         out = doa.clone()
+        eval_par = (not self.training) and getattr(self, "eval_parabolic", True) and Gf >= 3
         for j in range(doa.shape[1]):
             idx = torch.argmin((grid[None, :] - doa[:, j:j + 1]).abs(), dim=1)    # [B] nearest fine col
             win = (idx.unsqueeze(1) + offsets).clamp(0, Gf - 1)                   # [B, W]
             vals = torch.gather(spec_f, 1, win)                                   # [B, W]
-            w = torch.softmax(vals / temp, dim=1)
-            out[:, j] = (w * grid[win]).sum(dim=1)
+            if eval_par:
+                # EVAL: take the LOCAL PEAK inside the window, then parabolic sub-grid refinement
+                # (same rationale as _soft_argmax: no averaging across a neighbouring lobe).
+                c = torch.gather(win, 1, vals.argmax(dim=1, keepdim=True)).squeeze(1).clamp(1, Gf - 2)
+                y0 = torch.gather(spec_f, 1, (c - 1).unsqueeze(1)).squeeze(1).to(torch.float64)
+                y1 = torch.gather(spec_f, 1, c.unsqueeze(1)).squeeze(1).to(torch.float64)
+                y2 = torch.gather(spec_f, 1, (c + 1).unsqueeze(1)).squeeze(1).to(torch.float64)
+                den = (y0 - 2.0 * y1 + y2)
+                d_ = torch.where(den.abs() > self.rn_eps, 0.5 * (y0 - y2) / den, torch.zeros_like(den)).clamp(-1.0, 1.0)
+                out[:, j] = grid[c].to(torch.float64) + d_ * step
+            else:
+                w = torch.softmax(vals / temp, dim=1)
+                out[:, j] = (w * grid[win]).sum(dim=1)
         return out
 
     def _count_accuracy(self, sources_num, source_estimation):
