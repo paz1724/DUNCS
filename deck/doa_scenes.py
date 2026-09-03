@@ -28,23 +28,29 @@ DATASIM_GAIN = (0.10, 0.30)      # specular reflection AMPLITUDE = -20..-10 dB p
 DATASIM_NREFL = (1, 3)           # inclusive number of reflections per source
 DATASIM_SPREAD_DEG = 40.0        # reflection angular offset from its source
 DATASIM_POWER_BUDGET = 0.30      # total reflected power <= 30% of the direct path
+SEP_MAX_DEG = 40.0               # pair separation ~ U(gap, SEP_MAX): the project's definition,
+                                 # i.e. reuse>=15 is U(15,40) and reuse>=25 is U(25,40)
 FRONT_CONE_DEG = 70.0            # |theta| <= 70 (the configured doa_range)
 EDGE_MARGIN_DEG = 2.0            # keep sources/reflections off the very cone edge
 
 
-def draw_angles(rng, n_src, gap_deg=None, lo=-65.0, hi=65.0, max_extra=30.0):
+def draw_angles(rng, n_src, gap_deg=None, lo=-65.0, hi=65.0, sep_max=SEP_MAX_DEG):
     """Draw n_src angles (deg), continuous (never snapped to the manifold's 3-deg nodes).
 
     The previous 'Real' pool drew GT from exactly the recorded manifold's interpolation nodes,
     which is the grid estimators' own snapping lattice -> it handed them a free exact answer
     (MFOCUSS single RMS 0.86 -> 0.14 deg from that alone). Always draw continuously.
+
+    SEPARATION follows the project definition: separation ~ U(gap_deg, SEP_MAX_DEG), so
+    'reuse >= 15' is U(15, 40) and 'reuse >= 25' is U(25, 40). Both training and evaluation use it,
+    so the two never drift apart.
     """
     if n_src == 1:
         return np.array([rng.uniform(lo, hi)])
     gap = float(gap_deg)
-    a = rng.uniform(lo, hi - gap)
-    b = min(a + gap + rng.uniform(0.0, max_extra), hi)
-    return np.sort([a, b])
+    sep = rng.uniform(gap, float(sep_max))       # U(gap, 40) -- the project's reuse definition
+    a = rng.uniform(lo, hi - sep)
+    return np.sort([a, a + sep])
 
 
 def make_scene(steer, angles_deg, rng, *, T=8, rho=0.0, powers=None, datasim=False):
