@@ -171,6 +171,10 @@ class SPICE(ParentModel):
         # suppression radius (which would mask genuinely close pairs).
         is_peak = torch.zeros_like(spectrum, dtype=torch.bool)
         is_peak[:, 1:-1] = (spectrum[:, 1:-1] >= spectrum[:, :-2]) & (spectrum[:, 1:-1] >= spectrum[:, 2:])
+        # The two GRID ENDPOINTS count as peaks. Excluding them was tried (the MFOCUSS edge-pick
+        # investigation) and measured IDENTICAL on every scenario -- IAA's dense spectrum puts an
+        # estimate on an endpoint in under 1% of scenes -- so the exclusion was dropped rather than
+        # kept as a setting that does nothing.
         is_peak[:, 0] = spectrum[:, 0] > spectrum[:, 1]
         is_peak[:, -1] = spectrum[:, -1] > spectrum[:, -2]
         work = spectrum.masked_fill(~is_peak, float("-inf"))

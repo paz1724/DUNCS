@@ -57,6 +57,8 @@ class MFOCUSS(ParentModel):
                  pick_temp: float = 0.05,
                  pick_half_frac: float = 0.025,
                  pick_supp_frac: float = 0.03,
+                 pick_local_maxima_only: bool = False,  # MEASURED WORSE -- see _pick; kept for the record
+
                  pick_min_cols: int = 1,
                  refine_win_deg: float = 2.0,
                  eval_chunk: int = 256,
@@ -102,6 +104,7 @@ class MFOCUSS(ParentModel):
         self.pick_temp = pick_temp                  # peak-pick / refine local softmax temperature
         self.pick_half_frac = pick_half_frac        # peak-pick window half-width (fraction of G)
         self.pick_supp_frac = pick_supp_frac        # greedy peak suppression radius (fraction of G)
+        self.pick_local_maxima_only = pick_local_maxima_only   # see _pick
         self.pick_min_cols = pick_min_cols          # minimum window/refine half-width (columns)
         self.refine_win_deg = refine_win_deg        # fine-grid local refine window (+/- deg)
         self.eval_chunk = eval_chunk                # fine-grid pass chunk size (memory bound)
@@ -212,13 +215,36 @@ class MFOCUSS(ParentModel):
         supp = max(half, int(self.pick_supp_frac * G))
         grid_idx = torch.arange(G, device=spectrum.device)
         offsets = torch.arange(-half, half + 1, device=spectrum.device)
-        work = spectrum.clone()
+        # NOTE (falsified fix, kept OFF by default): restricting candidates to INTERIOR local
+        # maxima looks obviously right -- a plain argmax can return a grid ENDPOINT, and in the
+        # multipath sanity plots MFOCUSS's second estimate was visibly pinned at +/-70 deg when a
+        # coherent pair merged. It MEASURED WORSE, so it is not enabled:
+        #     reuse-15 MD 15.0 -> 26.8 %   reuse-25 10.5 -> 22.5 %
+        #     multipath-15 32.0 -> 45.8 %  multipath-25 25.5 -> 44.2 %  (edge picks 20-32 % -> 0)
+        # The reason is that the boundary atom is often a LEGITIMATE estimate: sources are drawn
+        # out to +/-65 deg, the manifold compresses near the cone edge so a source at 63 deg can
+        # genuinely peak at the boundary column, and the detection threshold (half the separation)
+        # accepts it. Removing the endpoint therefore deletes real detections to avoid a smaller
+        # number of spurious ones. Fixing this properly needs a grid that extends BEYOND the source
+        # cone so edge effects fall outside it -- not a change to the picker.
+        neg = float("-inf")
+        work_any = spectrum.clone()
+        if self.pick_local_maxima_only and G >= 3:
+            is_peak = torch.zeros_like(spectrum, dtype=torch.bool)
+            is_peak[:, 1:-1] = ((spectrum[:, 1:-1] >= spectrum[:, :-2])
+                                & (spectrum[:, 1:-1] >= spectrum[:, 2:]))
+            work = spectrum.masked_fill(~is_peak, neg)
+        else:
+            work = work_any.clone()
         centers = []
         for _ in range(source_number):
             idx = work.argmax(dim=1)
+            exhausted = torch.isinf(work.gather(1, idx.unsqueeze(1)).squeeze(1))
+            idx = torch.where(exhausted, work_any.argmax(dim=1), idx)
             centers.append(idx)
             mask = (grid_idx.unsqueeze(0) - idx.unsqueeze(1)).abs() <= supp
-            work = work.masked_fill(mask, float("-inf"))
+            work = work.masked_fill(mask, neg)
+            work_any = work_any.masked_fill(mask, neg)
         out = torch.zeros(B, source_number, dtype=torch.float64, device=spectrum.device)
         for j, idx in enumerate(centers):
             win = (idx.unsqueeze(1) + offsets).clamp(0, G - 1)
