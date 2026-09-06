@@ -3774,6 +3774,58 @@ def add_ml_ap_slide():
     return sl
 
 
+def add_mp_bughunt_slide():
+    """The multipath bug hunt: what was measured, what was falsified, what actually fixed it."""
+    sl = add_blank("Multipath bug hunt — three hypotheses, two falsified, one root cause", theme="Background",
+                   subtitle="SubspaceNet-MUSIC scored 74 % miss-rate on coherent pairs while CLASSICAL MUSIC on the raw covariance scored 5 %. A learned model losing to its own classical special-case is a bug by definition, so each candidate was measured rather than argued.")
+    T = THEMES["Background"][1]
+    rows = [
+        ("H1 · grid-edge fallback",
+         "MUSIC._peak_finder_1d filled a peak shortfall with topk(search_space) — the largest ANGLES, not the largest SPECTRUM values — pinning any missing source at the grid edge (~+70°).",
+         "FALSIFIED as the cause. Real bug, fires on only 7 % of scenes; repairing it moved multipath-15 MD 81.2 % → 80.0 %. Fixed anyway (fallback now ranks by spectrum)."),
+        ("H2 · both peaks on one lobe",
+         "Local maxima were ranked by amplitude with NO minimum separation, so one broad rippling lobe could supply both 'sources': GT [10.1°, 47.2°] read out as [11.69°, 12.31°].",
+         "FALSIFIED as the cause. Collapse rate 51 % → 21 % with an 8° separation, but MD only 72 % → 60 % — still nowhere near classical MUSIC's 5 %. Fixed anyway."),
+        ("H3 · the CNN covariance",
+         "Hold the readout COMPLETELY fixed and swap only the covariance fed to the same MUSIC algorithm — raw R̂ = x xᴴ/T versus the CNN's surrogate.",
+         "CONFIRMED — this reproduces the entire gap: multipath-25 2.73°/4 % on the raw covariance vs 4.87°/65 % on the CNN's. The CNN's 2nd eigenvalue is HIGHER (−14.5 vs −17.8 dB), so it is not rank collapse: the subspace is steered wrong."),
+        ("ROOT CAUSE · train/eval readout mismatch",
+         "Training reads the spectrum with a soft-argmax over cell_size; EVAL takes hard peaks. At the 0.3 default that window is ±42° — WIDER than any pair scored — so for a 25–40° pair it covered BOTH sources and the gradient was never forced to separate them.",
+         "Retrained at ±3.5°: multipath-15 MD 73.2 % → 0.5 %, multipath-25 63.2 % → 0.2 %, reuse-15 7.0 % → 1.2 %, single unchanged. The learned model now BEATS classical MUSIC on every scenario."),
+        ("H4 · MFOCUSS / SPICE edge picks",
+         "The sanity plots showed MFOCUSS's second estimate pinned at ±70° in 2 of 3 panels, and it takes an edge estimate in 20–32 % of ALL pair scenes. A grid endpoint is not a peak, so restrict candidates to interior local maxima.",
+         "FALSIFIED and REVERTED — it measured WORSE: MD reuse-15 15.0 → 26.8 %, multipath-25 25.5 → 44.2 %, with edge picks driven 32 % → 0. The boundary atom is often a LEGITIMATE estimate: sources are drawn to ±65°, the manifold compresses near the cone edge, and the threshold accepts it. For SPICE the same change was a literal no-op (identical to 4 s.f.), so it was dropped rather than kept as a dead setting."),
+    ]
+    y = 1.12
+    for i, (name, consider, result) in enumerate(rows):
+        h = 1.06
+        _add_card(sl, 0.35, y, 12.6, h, fill=COL_CARD_BG if i % 2 else COL_CARD_BG2)
+        _add_text(sl, 0.5, y + 0.06, 2.85, 0.9, name, size=10, bold=True, color=T)
+        _add_para(sl, 3.45, y + 0.07, 4.6, 0.92, consider, size=7.7, color=COL_SUB, gap_pt=0.3)
+        _add_para(sl, 8.2, y + 0.07, 4.6, 0.92, result, size=7.7, color=COL_TEXT, gap_pt=0.3)
+        y += h + 0.03
+    _add_text(sl, 0.5, y + 0.04, 12.4, 0.3,
+              "METHOD: four candidates, measured against a control before being believed — THREE died on measurement and only one was the cause. H4 is the cautionary one: it looked unambiguous in the figures (two of three panels showed the edge pick) and would have shipped as an improvement on the strength of those pictures alone. The earlier A/B concluding the wide window was 'no worse end-to-end' was run BEFORE the covariance and readout bugs were fixed.",
+              size=8.0, italic=True, color=COL_SUB)
+    return sl
+
+
+def add_mp_why_slide():
+    """Three worked coherent scenes: the control that works next to the three that do not."""
+    figs = [FIG_DIR / f"doa_mp_why_r{r}.png" for r in (1, 2, 3)]
+    return add_doa_sanity_slide(
+        "Why MFOCUSS / IAA / SubspaceNet-MUSIC lose on multipath — 3 worked examples",
+        "Same coherent scene in each panel: classical MUSIC on the RAW sample covariance (the control that works) overlaid with the three methods that fail. GT = green dashed; each method's own estimates are dashed in its own colour.",
+        figs,
+        ["Realization 1 — GT [10.1°, 47.2°]", "Realization 2 — GT [16.0°, 55.0°]", "Realization 3 — GT [−59.0°, −28.6°]"],
+        [
+            "CONTROL — MUSIC on R̂ = x xᴴ/T resolves all three pairs (DF 0.52° / 1.40° / 2.21°). ρ = 0.9 leaves the source covariance RANK-2, just ill-conditioned, so the information is present in the raw data. Any method that misses here is losing information the data still has.",
+            "SubspaceNet-MUSIC — the SAME MUSIC algorithm on the CNN's surrogate covariance: the nulls wash out into a broad plateau (panel 2) and estimates land on −23 dB ripples 60° from the source (panel 3). Swapping ONLY the covariance and holding the readout fixed reproduces the entire gap: 2.73°/4 % MD on the raw covariance vs 4.87°/65 % on the CNN's.",
+            "MFOCUSS — the second estimate is pinned at the GRID EDGE (+70° in panel 2, −70° in panel 3). _pick used a plain argmax, and an endpoint is not a peak: near the cone edge the steering vectors vary slowest with angle, so an edge atom correlates with almost any residual and absorbs it cheaply. When the coherent pair merges, the leftover energy piles there.",
+            "SPICE-IAA — merges the pair and reports the shoulders (4.15° / 4.27° / 7.17°). Its picker already filtered to local maxima but explicitly re-admitted the two grid ENDPOINTS as peaks, so it had the same edge escape hatch.",
+        ])
+
+
 def add_e150_table_slide(scen, title, subtitle):
     """Corrected 150 MHz performance table: 8 methods + CRLB row, 3 train->test columns."""
     data = _json.loads(_E150.read_text(encoding="utf-8"))
@@ -5436,6 +5488,8 @@ def main():
             ("DOA (correct) — reuse15 r2", lambda: add_doa_correct_slide("doa_correct_reuse15_r2.png", "DOA power spectra (correct algorithms) — reuse ≥15° (non-coherent) · realization 2", "Two non-coherent sources 15° apart (sub-Rayleigh). Same overlay; watch the two-peak resolution.", "reuse15")),
             ("DOA (correct) — multipath15 r1", lambda: add_doa_correct_slide("doa_correct_multipath15_r1.png", "DOA power spectra (correct algorithms) — multipath ≥15° (ρ=0.9) · realization 1", "Two PARTIALLY COHERENT sources (ρ=0.9) 15–40° apart — the hard case. Watch which methods resolve two peaks vs merge into one lobe.", "multipath15")),
             ("DOA (correct) — multipath15 r2", lambda: add_doa_correct_slide("doa_correct_multipath15_r2.png", "DOA power spectra (correct algorithms) — multipath ≥15° (ρ=0.9) · realization 2", "Two PARTIALLY COHERENT sources (ρ=0.9) 15–40° apart. Watch which methods resolve vs merge.", "multipath15")),
+            ("Why multipath fails — 3 worked examples", add_mp_why_slide),
+            ("Multipath bug hunt — journey", add_mp_bughunt_slide),
             ("Three bugs found & fixed", add_three_bugs_slide),
             ("CRB calculation — Synth column", add_crb_synth_slide),
             ("CRB calculation — Sim column", add_crb_sim_slide),
