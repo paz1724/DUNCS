@@ -20,12 +20,18 @@ from deck.doa_scenes import make_scene, draw_angles, RHO_PARTIAL, POWER_IMBALANC
 WHICH = (sys.argv[1] if len(sys.argv) > 1 else "du").lower()
 DATASIM = "--datasim" in sys.argv
 SMOKE = "--smoke" in sys.argv
+# MUSIC soft-argmax half-window as a fraction of the grid. Training reads the spectrum out with a
+# soft-argmax over +/-cell_size while EVAL takes hard peaks; at the 0.3 default that window is
+# +/-42 deg, so for a 25-40 deg pair it spans BOTH sources and the training gradient is never
+# forced to separate them. --cell runs the controlled A/B against the 0.3 checkpoint.
+CELL = float(sys.argv[sys.argv.index("--cell") + 1]) if "--cell" in sys.argv else None
 EPOCHS = 3 if SMOKE else {"du": 80, "music": 60, "doaformer": 100}[WHICH]
 N_TR, N_VA = (400, 200) if SMOKE else (5000, 1000)
 BATCH = 128
 SINGLE_FRAC, COH_FRAC = 0.34, 0.33          # 34% single / 33% independent pair / 33% coherent pair
 TAG = "datasim" if DATASIM else "synth"
-OUT = f"c:/GitHub/DUNCS/data/weights/{WHICH}_150MHz_{TAG}.pt"
+OUT = (f"c:/GitHub/DUNCS/data/weights/{WHICH}_150MHz_{TAG}"
+       + (f"_cell{CELL:g}" if CELL is not None else "") + ".pt")
 
 cfg = load_simulation_config("src/config/subspaceNet.yaml"); cfg.system_model.M = 2
 SM = SystemModel(cfg.system_model)
@@ -62,6 +68,12 @@ model = (ModelGenerator().set_model_type(SPEC[0]).set_system_model(SM)
          .set_model_params(SPEC[1]).set_model()).model.to(device)
 if WHICH == "du":
     model.extend_iters = 0                    # train K=20 layers; extension tail is eval-only
+if CELL is not None:
+    dm = model.diff_method
+    dm.cell_size_frac = CELL
+    dm.cell_size = max(1, int(dm.angels.shape[0] * CELL))
+    print(f"MUSIC soft-argmax window = +/-{np.rad2deg(dm.cell_size * float(dm.angels[1]-dm.angels[0])):.2f} deg "
+          f"({dm.cell_size} cells)", flush=True)
 
 def batches(data, bs, shuffle, rng):
     g1 = [d for d in data if d[1] == 1]; g2 = [d for d in data if d[1] == 2]
