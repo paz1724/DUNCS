@@ -4039,23 +4039,6 @@ def add_crb_sim_slide():
          "Because multipath is charged to the noise term, estimators can appear to approach this CONSERVATIVE bound more than the (tighter) synthetic one."])
 
 
-_DOA_CORRECT_WHAT = {
-    "single": [
-        "SINGLE source at the green-dashed GT. Power spectra overlaid: ML (beamscan) · MFOCUSS · SPICE-IAA · SubspaceNet-MUSIC · retrained DU-MFOCUSS; DoAFormer contributes angle markers only (gridless — no spectrum). Legend lists each method's DF error.",
-        "Recorded ULA3 @150 MHz, SNR ~28 dB, 8 snapshots. Every method resolves a single source to well under 1° — the easy regime.",
-    ],
-    "reuse15": [
-        "TWO NON-COHERENT sources 15° apart (green-dashed GT) — 0.49× the co-array Rayleigh limit at 150 MHz, i.e. sub-resolution. Spectra + DF-estimate markers vs angle.",
-        "The high-resolution methods (ML, SubspaceNet-MUSIC, retrained DU-MFOCUSS, DoAFormer) split the two peaks; the beam-limited ones broaden.",
-    ],
-    "multipath15": [
-        "TWO PARTIALLY COHERENT sources (ρ = 0.9) 15° apart at the TRUE 150 MHz — the hard case. Coherence drives the signal covariance near-singular, AND 15° is only 0.3× the ~50° Rayleigh limit of this array.",
-        "Nearly every method MERGES the pair into one lobe and reports the midpoint (DF ≈ 9° = half the separation) — ML, MFOCUSS, SPICE, SubspaceNet-MUSIC and DU-MFOCUSS alike. That is the APERTURE, not an implementation flaw: at 150 MHz the beam is far wider than the pair.",
-        "ONLY DoAFormer separates them (DF 1.63°). This matches the table exactly (2.1°/0 % MD vs 18–76 % MD for everything else) and is the clearest evidence that its learned set-prediction — rather than a spectrum peak search — is what survives coherence at sub-Rayleigh separation.",
-    ],
-}
-
-
 def add_doa_correct_slide(fig_name, title, subtitle, case):
     sl = add_blank(title, theme="Results", subtitle=subtitle)
     fig = FIG_DIR / fig_name
@@ -4068,6 +4051,30 @@ def add_doa_correct_slide(fig_name, title, subtitle, case):
               size=9.5, bold=True, color=THEMES["Final"][1])
     bullets(sl, 0.55, cy + 0.36, 12.3, SLIDE_H - cy - 0.5, _DOA_CORRECT_WHAT[case], size=8.4)
     return sl
+
+
+_DOA_CORRECT_WHAT = {
+    "single": [
+        "SINGLE source at the green-dashed GT. Power spectra overlaid: ML (beamscan) · classical MUSIC · MFOCUSS · SPICE-IAA · SubspaceNet-MUSIC · retrained DU-MFOCUSS; DoAFormer contributes angle markers only (gridless — no spectrum).",
+        "EVERY marker is that method's OWN forward() readout — not a peak picked off the plotted curve — so the DF errors in the legend are produced exactly the way the performance tables are.",
+        "Recorded ULA3 @150 MHz, SNR U(25,30) dB, 8 snapshots; scenes from deck/doa_scenes.py, the same generator the tables score. Every method resolves a single source to ~0.4–0.5° — at M = 1 they all reduce to the same matched filter, which is the sanity check this panel exists for.",
+        "READ THE WIDTH, NOT JUST THE PEAK: MUSIC and SubspaceNet-MUSIC are sharp (~1–2° at −3 dB) because a noise-subspace null is sharp; ML and SPICE are broad because they are beam-limited. All three families still land on the same angle.",
+        "WHY MFOCUSS IS DELIBERATELY SMOOTH AT M = 1 (and spiky on pairs): forward() switches λ by source count — λ = 0.02 for pairs (sharp → resolves) and the Hof λ = 0.99 schedule for a single source (smooth → precise). Measured over 300 scenes/scenario, that split is worth 5.6×: λ = 0.99 gives RMS 0.38° — ON the 0.39° CRLB — while forcing the sparse setting gives 2.13°.",
+        "The reason is in the width column: at λ = 0.02 the recovery collapses onto ONE grid node (0.2° = a single cell), so the error floors at grid quantization. The broad λ = 0.99 spectrum is what lets the soft-argmax readout interpolate BETWEEN nodes and reach sub-grid precision. A sparse method looking sparse is not automatically a sparse method being accurate.",
+    ],
+    "reuse15": [
+        "TWO INDEPENDENT sources 15–40° apart (green-dashed GT) — 0.3× the ~50° Rayleigh limit of this 1.15λ aperture at 150 MHz, i.e. deeply sub-resolution.",
+        "MFOCUSS and DU-MFOCUSS now plot as SPIKES (~0.3–1.0° at −3 dB on a −60 dB floor), which is what a sparse-recovery method must look like. They previously rendered as a ~70°-wide blob: the plotting script called _spectrum() directly and so bypassed forward()'s source-adaptive λ, silently running pairs at λ = 0.99 (the single-source 'smooth → precise' setting) instead of λ = 0.02.",
+        "COST OF THAT ONE WRONG ARGUMENT, measured over 200 scenes in EACH pair scenario — miss-rate reuse-15 15 %→52 %, reuse-25 15 %→60 %, multipath-15 34 %→64 %, multipath-25 23 %→88 % (RMS 3.8–5.7° → 5.6–8.9°). At λ = 0.99 the recovery never sparsifies, so it stays near its min-norm least-squares initialization — which is essentially a matched filter. That is why the curve looked like ML rather than like a sparse spectrum.",
+        "ML (blue) is the broadest curve and misses — a 1-D beamscan cannot resolve inside its own beamwidth. Classical MUSIC and the learned methods split the pair.",
+    ],
+    "multipath15": [
+        "TWO PARTIALLY COHERENT sources (ρ = 0.9) 15–40° apart at the TRUE 150 MHz — the hard case: coherence drives the signal covariance near-singular AND the pair is sub-Rayleigh.",
+        "ρ = 0.9, NOT ρ = 1. At exactly ρ = 1 the source covariance is rank-1 — the two 'sources' are literally the same signal — which no subspace or sparse method can resolve even in principle; plotting it would show a failure of the SCENARIO, not of the algorithms. The plot generator previously used the ρ = 1 path while the tables used ρ = 0.9; both now use deck/doa_scenes.py.",
+        "Classical MFOCUSS MERGES the pair to the midpoint (DF ≈ 9° = half the separation) and its second 'peak' lands on noise — the 33 % miss-rate in the table, made visible. Classical MUSIC, ML and SPICE merge too.",
+        "Retrained DU-MFOCUSS RESOLVES it (1.49°) and DoAFormer resolves it best (0.92°): both are trained on coherent pairs, and this is the clearest evidence that the learned models buy resolution the classical special-case cannot reach under coherence.",
+    ],
+}
 
 
 _REBUILT_ORDER = ["ML (Maximum Likelihood)", "MFOCUSS", "SPICE (IAA)", "SubspaceNet-MUSIC",
@@ -5423,12 +5430,12 @@ def main():
             ("Performance — Reuse ≥25°", add_e150_reuse25),
             ("Performance — Multipath ≥15° (coherent)", add_e150_multipath15),
             ("Performance — Multipath ≥25° (coherent)", add_e150_multipath25),
-            ("DOA (correct) — single r1", lambda: add_doa_correct_slide("doa_correct_single_r1.png", "DOA power spectra (correct algorithms) — single-source · realization 1", "ML beamscan + MFOCUSS + SPICE + SubspaceNet-MUSIC + retrained DU-MFOCUSS power spectra; DoAFormer = angle markers; GT = green dashed. Rendered by the cArray Plot_DOA.", "single")),
+            ("DOA (correct) — single r1", lambda: add_doa_correct_slide("doa_correct_single_r1.png", "DOA power spectra (correct algorithms) — single-source · realization 1", "ML beamscan + classical MUSIC + MFOCUSS + SPICE + SubspaceNet-MUSIC + retrained DU-MFOCUSS power spectra; DoAFormer = angle markers; GT = green dashed. Rendered by the cArray Plot_DOA; every marker is the method own forward() readout.", "single")),
             ("DOA (correct) — single r2", lambda: add_doa_correct_slide("doa_correct_single_r2.png", "DOA power spectra (correct algorithms) — single-source · realization 2", "ML beamscan + MFOCUSS + SPICE + SubspaceNet-MUSIC + retrained DU-MFOCUSS power spectra; DoAFormer = angle markers; GT = green dashed.", "single")),
-            ("DOA (correct) — reuse15 r1", lambda: add_doa_correct_slide("doa_correct_reuse15_r1.png", "DOA power spectra (correct algorithms) — reuse ≥15° (non-coherent) · realization 1", "Two non-coherent sources 15° apart (sub-Rayleigh at 150 MHz). Same overlay; watch the two-peak resolution.", "reuse15")),
+            ("DOA (correct) — reuse15 r1", lambda: add_doa_correct_slide("doa_correct_reuse15_r1.png", "DOA power spectra (correct algorithms) — reuse ≥15° (non-coherent) · realization 1", "Two INDEPENDENT sources 15–40° apart (sub-Rayleigh at 150 MHz). Same overlay; MFOCUSS and DU-MFOCUSS now plot as spikes.", "reuse15")),
             ("DOA (correct) — reuse15 r2", lambda: add_doa_correct_slide("doa_correct_reuse15_r2.png", "DOA power spectra (correct algorithms) — reuse ≥15° (non-coherent) · realization 2", "Two non-coherent sources 15° apart (sub-Rayleigh). Same overlay; watch the two-peak resolution.", "reuse15")),
-            ("DOA (correct) — multipath15 r1", lambda: add_doa_correct_slide("doa_correct_multipath15_r1.png", "DOA power spectra (correct algorithms) — multipath ≥15° (COHERENT) · realization 1", "Two COHERENT sources 15° apart — the hard case. Watch which methods resolve two peaks vs merge into one lobe.", "multipath15")),
-            ("DOA (correct) — multipath15 r2", lambda: add_doa_correct_slide("doa_correct_multipath15_r2.png", "DOA power spectra (correct algorithms) — multipath ≥15° (COHERENT) · realization 2", "Two COHERENT sources 15° apart. Watch which methods resolve vs merge.", "multipath15")),
+            ("DOA (correct) — multipath15 r1", lambda: add_doa_correct_slide("doa_correct_multipath15_r1.png", "DOA power spectra (correct algorithms) — multipath ≥15° (ρ=0.9) · realization 1", "Two PARTIALLY COHERENT sources (ρ=0.9) 15–40° apart — the hard case. Watch which methods resolve two peaks vs merge into one lobe.", "multipath15")),
+            ("DOA (correct) — multipath15 r2", lambda: add_doa_correct_slide("doa_correct_multipath15_r2.png", "DOA power spectra (correct algorithms) — multipath ≥15° (ρ=0.9) · realization 2", "Two PARTIALLY COHERENT sources (ρ=0.9) 15–40° apart. Watch which methods resolve vs merge.", "multipath15")),
             ("Three bugs found & fixed", add_three_bugs_slide),
             ("CRB calculation — Synth column", add_crb_synth_slide),
             ("CRB calculation — Sim column", add_crb_sim_slide),
