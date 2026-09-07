@@ -53,6 +53,8 @@ class MFOCUSS(ParentModel):
                  p_init: float = 0.99, p_min: float = 0.01, p_decay: float = 0.2,
                  lam_init: float = 0.99, lam_max: float = 0.99, lam_growth: float = 0.2,
                  lam_multi: float = 0.02,
+                 p_min_multi: float = 0.6,   # lp floor for M>=2; see forward() for why it differs
+
                  coarse_cols_per_180deg: int = 361,
                  pick_temp: float = 0.05,
                  pick_half_frac: float = 0.025,
@@ -98,8 +100,9 @@ class MFOCUSS(ParentModel):
         # p_init toward p_min (rate p_decay); lambda stays at 0.99 (lam_init==lam_max).
         self.p_init, self.p_min, self.p_decay = p_init, p_min, p_decay
         self.lam_init, self.lam_max, self.lam_growth = lam_init, lam_max, lam_growth
-        self.lam_multi = lam_multi  # low regularization for >=2 sources (0.02: sharper than the old 0.05 —
-                                    # same value as DU's train-selected scale; better on synthetic too)
+        self.lam_multi = lam_multi   # low regularization for >=2 sources (0.02: sharper than the old 0.05 —
+                                     # same value as DU's train-selected scale; better on synthetic too)
+        self.p_min_multi = float(p_min_multi)   # lp-diversity floor for >=2 sources (see forward)
         self.coarse_cols_per_180deg = coarse_cols_per_180deg  # coarse (M>=2) grid density cap (cols per 180 deg)
         self.pick_temp = pick_temp                  # peak-pick / refine local softmax temperature
         self.pick_half_frac = pick_half_frac        # peak-pick window half-width (fraction of G)
@@ -147,7 +150,8 @@ class MFOCUSS(ParentModel):
         """
         return f"K={self.num_iter}_p={self.p}_lam={self.lam}"
 
-    def _spectrum(self, x: torch.Tensor, lam_const: float = None) -> torch.Tensor:
+    def _spectrum(self, x: torch.Tensor, lam_const: float = None,
+                  p_min: float = None) -> torch.Tensor:
         """Runs M-FOCUSS (Hof "Original" MMV variant) and returns the spectrum.
 
         Faithful port of the Hof cArray.MFOCUSS_Original recovery: the input is
@@ -163,6 +167,8 @@ class MFOCUSS(ParentModel):
             lam_const (float): If given, use this constant regularization instead of
                 the Hof lambda schedule (set per source-count by forward: high lambda
                 for a single source = precision, low lambda for >=2 = resolution).
+            p_min (float): If given, overrides the lp-diversity floor (also set per
+                source-count by forward; see p_min_multi).
 
         Returns:
             torch.Tensor: Normalized angular power spectrum, shape [B, G].
@@ -179,6 +185,7 @@ class MFOCUSS(ParentModel):
                           torch.linalg.solve(AAh + self.ls_init_reg * eye, Y))
         li = self.lam_init if lam_const is None else lam_const
         lm = self.lam_max if lam_const is None else lam_const
+        pmin = self.p_min if p_min is None else float(p_min)
         p, lam = self.p_init, li
         for it in range(1, self.num_iter + 1):
             gamma = torch.linalg.norm(mu, dim=2)                # sqrt(sum_t |mu|^2)
@@ -194,7 +201,7 @@ class MFOCUSS(ParentModel):
             lam_t = torch.tensor(lam, dtype=torch.complex128, device=Y.device)
             q = torch.einsum("bng,bnt->bgt", AW.conj(), torch.linalg.solve(gram + lam_t * eye, Y))
             mu = w.unsqueeze(2).to(torch.complex128) * q
-            p = self.p_min + (self.p_init - self.p_min) * np.exp(-self.p_decay * it)
+            p = pmin + (self.p_init - pmin) * np.exp(-self.p_decay * it)
             lam = lm + (li - lm) * np.exp(-self.lam_growth * it)
         spectrum = torch.linalg.norm(mu, dim=2)
         return spectrum / (spectrum.amax(dim=1, keepdim=True) + self.spectrum_norm_eps)
@@ -283,18 +290,29 @@ class MFOCUSS(ParentModel):
         # (smooth -> precise); >=2 sources use a low constant lambda (sharp -> resolves close
         # sources instead of merging them into one peak and missing the other).
         lam_const = None if src <= 1 else self.lam_multi
+        # Source-adaptive lp floor, for the same reason lambda is source-adaptive. p -> 0 drives the
+        # reweighting toward L0 (winner-take-all), which is what a SINGLE source wants: measured
+        # 0.42 deg at p_min=0.01 versus 2.74 deg at 0.6 -- on the 0.39 deg CRLB versus 6.5x off it.
+        # For a PAIR it is the wrong objective, because the dictionary is nearly collinear at these
+        # sub-Rayleigh separations (mutual coherence 0.30-0.87 against the mu < 1/3 that Lp recovery
+        # needs), so committing hard to one atom collapses the pair. Keeping p away from 0 stays
+        # closer to the better-behaved L1 problem. Measured over 200 scenes/scenario:
+        #     multipath-15 6.04/32.0% -> 4.84/17.5%    multipath-25 5.50/25.5% -> 4.55/17.2%
+        #     reuse-15     4.10/15.0% -> 4.18/13.2%    reuse-25     3.91/10.5% -> 3.89/ 8.2%
+        # with single-source UNCHANGED at 0.42 deg because it keeps the p_min=0.01 branch.
+        p_min_const = None if src <= 1 else self.p_min_multi
         # Source-adaptive grid (mirrors DU-MFOCUSS): fine for M=1, coarse for M>=2.
         single = src <= 1
         self._A_use = self.A_fine if single else self.A
         self._grid_use = self.grid_fine if single else self.grid
-        spectrum = self._spectrum(x, lam_const)
+        spectrum = self._spectrum(x, lam_const, p_min_const)
         doa = self._pick(spectrum, src)
         if not single and getattr(self, "refine_pairs", True):
             # Coarse-detect -> FINE-refine (mirrors DU-MFOCUSS): re-run the recovery on the fine
             # dictionary and take a local soft-argmax around each coarse peak (accuracy only).
             self._A_use = self.A_fine
             self._grid_use = self.grid_fine
-            spec_f = torch.cat([self._spectrum(x[i:i + self.eval_chunk], lam_const)   # chunked: fine-grid pass
+            spec_f = torch.cat([self._spectrum(x[i:i + self.eval_chunk], lam_const, p_min_const)  # chunked
                                 for i in range(0, x.shape[0], self.eval_chunk)])      # OOMs on 4 GB at B=3000
             # Gather-based window (like _pick) — NOT a -inf-masked softmax over the full grid:
             # the CUDA float64 softmax kernel mis-normalizes when ~99% of a row is -inf.
