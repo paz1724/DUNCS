@@ -3810,6 +3810,52 @@ def add_mp_bughunt_slide():
     return sl
 
 
+def add_two_coherences_slide():
+    """Why classical MUSIC beats MFOCUSS on the coherent rows: TWO different coherences."""
+    sl = add_blank("Two different coherences — why MUSIC beats MFOCUSS on the “multipath” rows",
+                   theme="Background",
+                   subtitle="Theory says MUSIC needs rank(Rs)=M and must collapse as sources become coherent, while sparse recovery does not depend on rank. The tables show the opposite ordering — because the scenario varies TWO coherences at once, and they penalise opposite methods.")
+    T = THEMES["Background"][1]
+    _add_card(sl, 0.35, 1.12, 7.5, 2.62, fill=COL_CARD_BG2)
+    _add_text(sl, 0.5, 1.18, 7.2, 0.26, "AXIS 1 — SIGNAL coherence ρ  (penalises MUSIC)", size=10.5, bold=True, color=T)
+    _add_text(sl, 0.5, 1.44, 7.2, 0.22, "miss-rate %, separation fixed 25–40°, EQUAL powers, T=8", size=7.6, italic=True, color=COL_SUB)
+    rows1 = [
+        "  method             ρ=0  ρ=0.3  ρ=0.6  ρ=0.9  ρ=0.99  ρ=1.0",
+        "  MUSIC (classical)  0.0    0.0    0.0    3.7    58.0    94.3",
+        "  MFOCUSS           14.7   14.3   13.7   25.7    51.0    55.3",
+        "  SPICE (IAA)       11.0   15.0   23.3   35.3    40.7    39.7",
+        "  " + "-" * 56,
+        "  degradation from ρ=0:  MUSIC +94.3  MFOCUSS +40.7  SPICE +28.7",
+    ]
+    _add_text(sl, 0.5, 1.70, 7.2, 1.5, "\n".join(rows1), size=8.4, color=COL_TEXT, name="Consolas", wrap=False)
+    _add_para(sl, 0.5, 3.06, 7.2, 0.62,
+              "MUSIC is FLAT to ρ=0.6 and then collapses at rank-1, exactly as theory requires. MFOCUSS and SPICE are 2–3× more coherence-robust. The ordering FLIPS at ρ≈0.99: MFOCUSS 51.0 vs MUSIC 58.0, and at ρ=1.0 it is 55.3 vs 94.3.",
+              size=8.0, color=COL_TEXT, gap_pt=0.4)
+    _add_card(sl, 8.0, 1.12, 4.95, 2.62, fill=COL_CARD_BG2)
+    _add_text(sl, 8.15, 1.18, 4.65, 0.26, "AXIS 2 — DICTIONARY coherence μ  (penalises MFOCUSS)", size=10.5, bold=True, color=T)
+    _add_text(sl, 8.15, 1.44, 4.65, 0.22, "μ = |aᴴ(θ₁)a(θ₂)| / ‖a₁‖‖a₂‖, recorded manifold", size=7.6, italic=True, color=COL_SUB)
+    rows2 = [
+        "  separation      μ", "     15°       0.873", "     25°       0.672",
+        "     40°       0.299", "     50°       0.092", "  " + "-" * 20,
+        "  Lp/MMV recovery needs", "  μ < 1/(2K−1) = 0.333",
+    ]
+    _add_text(sl, 8.15, 1.70, 4.65, 1.5, "\n".join(rows2), size=8.4, color=COL_TEXT, name="Consolas", wrap=False)
+    _add_para(sl, 8.15, 3.06, 4.65, 0.62,
+              "Our reuse band is 25–40°, so μ ≈ 0.30–0.67 — at or ABOVE the recovery threshold for most of it. Every pair scored is sub-Rayleigh on this 1.15λ aperture.",
+              size=8.0, color=COL_TEXT, gap_pt=0.4)
+    cy = 3.86
+    _add_card(sl, 0.35, cy, 12.6, SLIDE_H - cy - 0.14, fill=COL_CARD_BG)
+    _add_text(sl, 0.55, cy + 0.08, 12.2, 0.28, "What this means for the tables", size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.6, cy + 0.42, 12.15, SLIDE_H - cy - 0.58, [
+        "The row labelled “multipath” runs at ρ = 0.9, BELOW the crossover. At 0.9 the source covariance is still rank-2 — merely ill-conditioned — so MUSIC survives with 3.7 % MD, while MFOCUSS is already crippled by the SEPARATION axis it cannot escape.",
+        "MFOCUSS loses at ρ = 0 too (14.7 % vs 0.0 %), before coherence is involved at all. Its handicap is sub-Rayleigh dictionary coherence, not correlation — and not power imbalance either: this sweep used EQUAL powers and reproduced the same 14.7 %.",
+        "So that row is largely a SUB-RAYLEIGH RESOLUTION test wearing a coherence label: it penalises the axis MFOCUSS is weak on and barely exercises the axis it is strong on.",
+        "ρ = 0.9 was chosen deliberately — at exactly ρ = 1 the covariance is rank-1, which nothing can resolve and which would test the SCENARIO rather than the estimators. The consequence is that the tables never reach the regime where sparse recovery wins; that regime starts at ρ ≈ 0.99.",
+        "FIX THAT CAME OUT OF THIS: MFOCUSS annealed its lp exponent to p_min = 0.01 — effectively L0, winner-take-all — which is right for ONE source but wrong against a near-collinear dictionary, where committing hard to a single atom collapses the pair. p_min is now source-adaptive (0.01 for M = 1, 0.6 for M ≥ 2), exactly as λ already was. Multipath-15 MD 32.0 % → 17.5 %, multipath-25 25.5 % → 17.2 %, reuse-25 10.5 % → 8.2 %, single-source UNCHANGED at 0.42° on the 0.39° CRLB.",
+    ], size=8.4)
+    return sl
+
+
 def add_mp_why_slide():
     """Three worked coherent scenes: the control that works next to the three that do not."""
     figs = [FIG_DIR / f"doa_mp_why_r{r}.png" for r in (1, 2, 3)]
@@ -5490,6 +5536,7 @@ def main():
             ("DOA (correct) — multipath15 r2", lambda: add_doa_correct_slide("doa_correct_multipath15_r2.png", "DOA power spectra (correct algorithms) — multipath ≥15° (ρ=0.9) · realization 2", "Two PARTIALLY COHERENT sources (ρ=0.9) 15–40° apart. Watch which methods resolve vs merge.", "multipath15")),
             ("Why multipath fails — 3 worked examples", add_mp_why_slide),
             ("Multipath bug hunt — journey", add_mp_bughunt_slide),
+            ("Two coherences — MUSIC vs MFOCUSS", add_two_coherences_slide),
             ("Three bugs found & fixed", add_three_bugs_slide),
             ("CRB calculation — Synth column", add_crb_synth_slide),
             ("CRB calculation — Sim column", add_crb_sim_slide),
