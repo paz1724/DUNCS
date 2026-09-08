@@ -82,7 +82,7 @@ DU_W = "DUMFOCUSS_K=20_grid=721_N=5_M=[1,-2]_T=8_NarrowBand_SNR=30_Far_field_coh
 
 # (display name, sanitized field, builder, extractor kind)
 SPECS = [
-    ("MFOCUSS", "MFOCUSS", ("MFOCUSS", dict(num_iterations=100, grid_size=901, p=0.8, lam=0.05, grid_range_deg=[-180, 180]), None), "focuss"),
+    ("MFOCUSS", "MFOCUSS", ("MFOCUSS", dict(num_iterations=100, grid_size=901, grid_range_deg=[-180, 180]), None), "focuss"),
     ("SPICE (IAA)", "SPICE_IAA", ("SPICE", dict(num_iterations=100, grid_size=901), None), "focuss"),
     ("SubspaceNet-MUSIC", "SubspaceNet_MUSIC", ("SubspaceNet", dict(tau=7, diff_method="music_1D"), MUSIC_W), "ss_music"),
     ("SubspaceNet-MVDR", "SubspaceNet_MVDR", ("SubspaceNet", dict(tau=7, diff_method="mvdr"), MUSIC_W), "ss_music"),

@@ -77,7 +77,7 @@ def build(mt, pr, wf, extra=None):
     return m
 MUSIC_W = "SubspaceNet_tau=7_diff_method=music_angle_N=5_M=[1,-2]_T=8_NarrowBand_SNR=30_Far_field_non-coherent_eta=0.0_sv_var=0.0"
 mus = build("SubspaceNet", dict(tau=7, diff_method="music_1D"), MUSIC_W)
-mfo = build("MFOCUSS", dict(num_iterations=100, grid_size=901, p=0.8, lam=0.05, grid_range_deg=[-180, 180]), None)
+mfo = build("MFOCUSS", dict(num_iterations=100, grid_size=901, grid_range_deg=[-180, 180]), None)
 spi = build("SPICE", dict(num_iterations=100, grid_size=901), None)
 du = build("DUMFOCUSS", dict(num_iterations=20, grid_size=901, grid_range_deg=[-70, 70], p_init_decay=0.2,
                             peak_lim_deg=70.0, angle_dependent_reg=True), None)

@@ -1,9 +1,11 @@
 """
 MFOCUSS: classical (non-learned) Multiple-measurement FOCUSS baseline for DoA.
 
-This is the same M-FOCUSS sparse-recovery iteration used by DU-MFOCUSS, but with
-FIXED regularization lambda and FIXED lp-diversity p, run for a fixed number of
-iterations and NOT trained. It serves as the classical baseline: comparing
+This is the same M-FOCUSS sparse-recovery iteration used by DU-MFOCUSS, but with a
+FIXED ANNEALING SCHEDULE for the lp-diversity p and the regularization lambda -- run
+for a fixed number of iterations and NOT trained. Both are set by SOURCE COUNT rather
+than learned: p decays 0.99 -> p_min (0.01 for one source, p_min_multi = 0.6 for a
+pair) and lambda is held at 0.99 for one source, lam_multi = 0.02 for a pair. It serves as the classical baseline: comparing
 DU-MFOCUSS against MFOCUSS isolates the benefit of *learning* lambda and p per
 layer (the deep-unfolding gain), while comparing SubspaceNet / DoAFormer against
 it measures the gain of the learned-feature approaches over classical sparse
@@ -38,10 +40,10 @@ def _unit_norm_cols(A: torch.Tensor, enable: bool = True) -> torch.Tensor:
 
 
 class MFOCUSS(ParentModel):
-    """Classical M-FOCUSS sparse-recovery DoA baseline (fixed lambda, p; no training)."""
+    """Classical M-FOCUSS sparse-recovery DoA baseline (annealed p, source-adaptive lambda; untrained)."""
 
     def __init__(self, system_model: SystemModel, num_iterations: int = 50,
-                 grid_size: int = 121, p: float = 0.8, lam: float = 0.05,
+                 grid_size: int = 121,
                  criterion: str = "rmspe", grid_range_deg=None,
                  normalize_dict: bool = True,   # unit-norm atoms; see _unit_norm_cols (0.87deg floor)
                  snapshot_normalized_reweight: bool = True,   # T-invariant reweight (see below)
@@ -76,11 +78,18 @@ class MFOCUSS(ParentModel):
             num_iterations (int): Number of M-FOCUSS iterations (fixed, not unrolled).
             grid_size (int): Number of angle-grid columns in the FINE (single-source)
                 steering dictionary; the multi-source dictionary is COARSE (<=361 cols).
-            p (float): Fixed lp-diversity exponent in (0, 2] (smaller = sparser).
-            lam (float): Fixed regularization weight (> 0).
             criterion (str): Evaluation criterion name (e.g. "rmspe").
             grid_range_deg (float | [lo, hi]): Optional grid azimuth range override
                 (scalar = symmetric); same semantics as DU-MFOCUSS.
+
+        There is deliberately NO fixed `p` / `lam` argument. The operating point is the
+        SCHEDULE: p decays from p_init toward p_min (p_min_multi when M >= 2) at rate
+        p_decay, and lambda is held at lam_init (lam_multi when M >= 2). Dead `p=0.8,
+        lam=0.05` arguments used to sit here -- every call site and mfocuss.yaml passed
+        them, and they reached nothing but the checkpoint-name string, so the config
+        advertised an operating point the algorithm never used (really p: 0.99 -> 0.6 and
+        lambda = 0.02 for a pair). Removed rather than wired up: the annealed schedule is
+        what the Hof reference defines.
 
         The remaining keyword args are hoisted numeric tunables / thresholds /
         epsilons; their defaults reproduce the historical hard-coded values
@@ -90,8 +99,6 @@ class MFOCUSS(ParentModel):
         self.criterion = set_criterions(criterion.lower())[0]
         self.num_iter = num_iterations
         self.grid_size = grid_size
-        self.p = float(p)
-        self.lam = float(lam)
         self.snapshot_normalized_reweight = snapshot_normalized_reweight
         self.reweight_ref_snapshots = int(reweight_ref_snapshots)
 
@@ -148,7 +155,10 @@ class MFOCUSS(ParentModel):
         Returns:
             str: String of the form "K=<iters>_p=<p>_lam=<lam>".
         """
-        return f"K={self.num_iter}_p={self.p}_lam={self.lam}"
+        # Reports the ACTUAL operating point (the schedule), not a fixed p/lam that
+        # does not exist. Kept filename-safe: this feeds get_model_file_name().
+        return (f"K={self.num_iter}_pinit={self.p_init}_pmin={self.p_min}"
+                f"_pmulti={self.p_min_multi}_lam={self.lam_init}_lammulti={self.lam_multi}")
 
     def _spectrum(self, x: torch.Tensor, lam_const: float = None,
                   p_min: float = None) -> torch.Tensor:

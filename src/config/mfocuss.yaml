@@ -24,10 +24,10 @@ model:
   model_params:                           # EXACT parameters of the comparison-table baseline row
     num_iterations: 100                   # FOCUSS iterations (Hof schedule anneals p over these)
     grid_size: 901                        # Fine grid columns; coarse pair grid capped by coarse_cols_per_180deg
-    p: 0.8                                # lp diversity exponent (legacy arg; the Hof schedule governs)
-    lam: 0.05                             # Regularization (legacy arg; lam_multi=0.02 governs multi-source)
     grid_range_deg: [-180, 180]           # Full-azimuth dictionary (front/back resolved by the recorded manifold)
-    # All other knobs (p_decay, lam_multi, coarse_cols_per_180deg, pick_temp, ...) are named
+    # There is no fixed p/lam: p anneals p_init -> p_min (p_min_multi for M>=2) and lambda is
+    # held at lam_init (lam_multi for M>=2). All these knobs (p_decay, lam_multi, p_min_multi,
+    # coarse_cols_per_180deg, pick_temp, ...) are named
     # constructor defaults in src/models_pack/mfocuss.py — override any of them here if needed.
 
 

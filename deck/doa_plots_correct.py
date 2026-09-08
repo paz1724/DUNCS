@@ -71,7 +71,7 @@ def build(mt, pr, wf):
     m = (ModelGenerator().set_model_type(mt).set_system_model(SM).set_model_params(pr).set_model()).model.to(device).eval()
     if wf and os.path.exists("data/weights/" + wf): m.load_state_dict(torch.load("data/weights/" + wf, map_location=device), strict=False)
     return m
-mfo = build("MFOCUSS", dict(num_iterations=100, grid_size=901, p=0.8, lam=0.05, grid_range_deg=[-70, 70]), None)
+mfo = build("MFOCUSS", dict(num_iterations=100, grid_size=901, grid_range_deg=[-70, 70]), None)
 spi = build("SPICE", dict(num_iterations=100, grid_size=901), None)
 mus = build("SubspaceNet", dict(tau=7, diff_method="music_1D"), "music_150MHz_synth.pt")
 du = build("DUMFOCUSS", dict(num_iterations=20, grid_size=901, grid_range_deg=[-70, 70], p_init_decay=0.2, peak_lim_deg=70.0, angle_dependent_reg=True), "du_150MHz_synth.pt")

@@ -46,7 +46,7 @@ def build(mt, pr, wf=None):
 
 
 mus = build("SubspaceNet", dict(tau=7, diff_method="music_1D"), "music_150MHz_synth.pt")
-mfo = build("MFOCUSS", dict(num_iterations=100, grid_size=901, p=0.8, lam=0.05, grid_range_deg=[-70, 70]))
+mfo = build("MFOCUSS", dict(num_iterations=100, grid_size=901, grid_range_deg=[-70, 70]))
 spi = build("SPICE", dict(num_iterations=100, grid_size=901))
 cap = {}
 _orig = mus.diff_method.forward
