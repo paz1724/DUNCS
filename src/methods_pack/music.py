@@ -104,6 +104,10 @@ class MUSIC(SubspaceMethod):
             (self.estimation_params == "angle, range") - tuple, each one of the elements is torch.Tensor for the predicted param.
         """
 
+        # ---- 1. Near-field range mode needs a per-batch search grid ----
+        # In the far field the grid depends only on angle and is built once in __init__. For a
+        # near-field RANGE estimate the grid also depends on the already-known angle, so it must be
+        # rebuilt per batch; with several known angles this recurses once per source.
         M = number_of_sources
         # single param estimation: the search grid should be updated for each batch, else, it's the same search grid.
         if self.system_model.params.field_type.startswith("Near") and self.estimation_params == "range":
@@ -117,9 +121,19 @@ class MUSIC(SubspaceMethod):
                                                        is_soft=is_soft)
                     params[:, source] = params_source.squeeze()
                 return params
+        # ---- 2. Noise subspace ----
+        # MUSIC uses the NOISE subspace, not the signal one: a steering vector at a true DoA is
+        # orthogonal to it, so the projection nulls there.
         _, noise_subspace, source_estimation, eigen_regularization = self.subspace_separation(cov.to(torch.complex128), M)
+
+        # ---- 3. Spectrum = reciprocal of that projection ----
+        # ||E_n^H a(theta)||^2 is near zero at a source, so its reciprocal PEAKS there. The nulls
+        # are far sharper than a beampattern, which is why MUSIC super-resolves -- and also why it
+        # fails when coherence corrupts the subspace split.
         inverse_spectrum = self.get_inverse_spectrum(noise_subspace.to(device)).to(device)
         self.music_spectrum = 1 / inverse_spectrum
+
+        # ---- 4. Read the peaks out ----
         params = self.peak_finder(M)
         return params, source_estimation, eigen_regularization
 
@@ -173,10 +187,18 @@ class MUSIC(SubspaceMethod):
         in case of dual param estimation it will be 2D inverse spectrum:
                                                     BatchSizex(length_search_grid_angle)x(length_search_grid_distance)
         """
+        # ---- Project every grid steering vector onto the noise subspace ----
+        # The quantity is ||E_n^H a(theta)||: small at a true DoA (orthogonal), large elsewhere.
+        # Each branch below computes the same thing for a different parameterization; only the
+        # tensor layout differs, which is why the einsum subscripts change but the norm does not.
+
+        # ---- FAR field: 1-D over angle ----
         if self.system_model.params.field_type.startswith("Far"):
             var1 = torch.einsum("an, bnm -> bam", self.search_grid.conj().transpose(0, 1)[:, :noise_subspace.shape[1]],
                                 noise_subspace)
             inverse_spectrum = torch.norm(var1, dim=2)
+
+        # ---- NEAR field: 2-D (angle x range), or 1-D with the other parameter known ----
         else:
             if self.estimation_params.startswith("angle, range"):
                 var1 = torch.einsum("adk, bkl -> badl",
@@ -209,6 +231,9 @@ class MUSIC(SubspaceMethod):
         -------
         the predicted param(torch.Tensor) or params(tuple)
         """
+        # ---- Dispatch on what is being estimated ----
+        # Far field is always a 1-D angle search; near field is 1-D or 2-D depending on which
+        # parameters are unknown.
         if self.system_model.params.field_type.startswith("Far"):
             return self._peak_finder_1d(self.angels, source_number)
         else:
@@ -332,18 +357,25 @@ class MUSIC(SubspaceMethod):
             torch.Tensor: Estimated parameters; hard-decision grid values when not training,
                 otherwise differentiable soft-decision estimates of shape (batch, source_number).
         """
+        # ---- 1. How many peaks to return ----
         if source_number is None:
             source_number = self.system_model.params.M
         if self.estimation_params == "range":
             source_number = 1  # for the range estimation, only one source is expected.
 
+        # ---- 2. Per-sample peak selection ----
+        # Looped rather than vectorized because find_peaks is a SciPy call on CPU; the batch is
+        # small at eval and this path is not used in the training inner loop.
         batch_size = self.music_spectrum.shape[0]
 
         peaks = torch.zeros(batch_size, source_number, dtype=torch.int64, device=device)
         for batch in range(batch_size):
             music_spectrum = self.music_spectrum[batch].cpu().detach().numpy().squeeze()
             # Find spectrum peaks
+            # 2a. All local maxima of this sample's spectrum.
             peaks_tmp = sc.signal.find_peaks(music_spectrum, threshold=0.0)[0]
+
+            # 2b. Strongest first, then greedy with a minimum separation.
             # Strongest first, then take them GREEDILY subject to a minimum separation, so a
             # single broad lobe cannot supply two "sources" (see peak_min_sep_deg in __init__).
             sorted_peaks = peaks_tmp[np.argsort(music_spectrum[peaks_tmp])[::-1]]
@@ -370,6 +402,12 @@ class MUSIC(SubspaceMethod):
             while len(keep) < source_number:               # degenerate grid; keep the shape valid
                 keep.append(keep[-1] if keep else 0)
             peaks[batch] = torch.tensor(keep[:source_number], dtype=torch.int64, device=device)
+        # ---- 3. Hard peaks at eval, soft-argmax while training ----
+        # A grid index is a discrete choice with no gradient, so training instead returns a
+        # differentiable soft-decision average around each peak (__maskpeak_1d). This train/eval
+        # asymmetry is load-bearing: the width of that soft window decides what the network is
+        # actually taught, and a too-wide window is what previously broke coherent pairs
+        # (see cell_size_frac in __init__).
         if not self.training:
             # if the model is not in training mode, return the peaks
             return search_space[peaks]

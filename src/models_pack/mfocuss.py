@@ -183,21 +183,39 @@ class MFOCUSS(ParentModel):
         Returns:
             torch.Tensor: Normalized angular power spectrum, shape [B, G].
         """
+        # ---- 1. Scale-normalize the input ----
+        # lambda is a FIXED constant, so it only means the same thing if the data always
+        # arrives at the same scale. Divide out the RMS so received power cannot change
+        # the effective amount of regularization.
         Y = x.to(torch.complex128)
         rms = torch.sqrt(torch.mean(Y.abs() ** 2, dim=(1, 2), keepdim=True)).clamp_min(self.rms_clamp_eps)
         Y = Y / rms.to(torch.complex128)                        # bring signal to RMS = 1
+
+        # ---- 2. Select the dictionary ----
+        # forward() has already pointed _A_use at the fine (M=1) or coarse (M>=2) grid.
         A = self._A_use if self._A_use is not None else self.A  # source-adaptive dictionary
         N = A.shape[0]
         eye = torch.eye(N, dtype=torch.complex128, device=Y.device)
-        # least-squares (min-norm) initialization: mu0 = A^H (A A^H)^-1 Y
+
+        # ---- 3. Minimum-norm least-squares start ----
+        # FOCUSS is a reweighted iteration and needs a non-sparse seed to reweight FROM;
+        # mu0 = A^H (A A^H)^-1 Y is the minimum-norm solution of A mu = Y.
         AAh = A @ A.conj().t()
         mu = torch.einsum("gn,bnt->bgt", A.conj().t(),
                           torch.linalg.solve(AAh + self.ls_init_reg * eye, Y))
+        # ---- 4. Resolve the annealing schedule ----
+        # Endpoints for this call: forward() overrides both per source count (high lambda /
+        # p->0 for a single source, lam_multi / p_min_multi for a pair).
         li = self.lam_init if lam_const is None else lam_const
         lm = self.lam_max if lam_const is None else lam_const
         pmin = self.p_min if p_min is None else float(p_min)
         p, lam = self.p_init, li
+
+        # ---- 5. Reweighted (IRLS/FOCUSS) iteration ----
+        # Each pass: measure current row energy -> build the lp reweighting from it -> solve the
+        # weighted regularized least squares -> anneal p (sparser) and lambda toward their floors.
         for it in range(1, self.num_iter + 1):
+            # 5a. Row energy per grid angle: how much this atom currently explains.
             gamma = torch.linalg.norm(mu, dim=2)                # sqrt(sum_t |mu|^2)
             if self.snapshot_normalized_reweight:
                 # ||.||_2 over snapshots grows as sqrt(T), so gram ~ w^2 ~ T^(1-p/2) while lambda is a
@@ -205,14 +223,26 @@ class MFOCUSS(ParentModel):
                 # iteration destabilizes. Measured at 30 dB: T=8 -> 1.05x CRLB but T=16/32/64 ->
                 # 12.7x / 36.6x / 43.4x. Using the RMS over snapshots makes the reweight T-invariant.
                 gamma = gamma * np.sqrt(self.reweight_ref_snapshots / mu.shape[2])
+            # 5b. lp reweighting: strong atoms get a larger weight, so the next solve favours
+            # them. Smaller p = harsher preference = sparser answer.
             w = (gamma + self.reweight_floor) ** (1.0 - p / 2.0)
+
+            # 5c. Weighted regularized least squares, mu = W (A W)^+ Y, solved in the N x N
+            # sensor space (N=5) rather than the G x G angle space -- same answer, far cheaper.
             AW = A.unsqueeze(0) * w.unsqueeze(1).to(torch.complex128)
             gram = torch.einsum("bng,bmg->bnm", AW, AW.conj())
             lam_t = torch.tensor(lam, dtype=torch.complex128, device=Y.device)
             q = torch.einsum("bng,bnt->bgt", AW.conj(), torch.linalg.solve(gram + lam_t * eye, Y))
             mu = w.unsqueeze(2).to(torch.complex128) * q
+
+            # 5d. Anneal. p starts near 1 (well-behaved, L1-like) and decays toward its floor so
+            # early passes locate the sources and later passes sharpen them.
             p = pmin + (self.p_init - pmin) * np.exp(-self.p_decay * it)
             lam = lm + (li - lm) * np.exp(-self.lam_growth * it)
+
+        # ---- 6. Collapse to an angular spectrum ----
+        # One value per grid angle = its energy across all snapshots, peak-normalized so the
+        # readout thresholds mean the same thing at any input power.
         spectrum = torch.linalg.norm(mu, dim=2)
         return spectrum / (spectrum.amax(dim=1, keepdim=True) + self.spectrum_norm_eps)
 
@@ -226,12 +256,17 @@ class MFOCUSS(ParentModel):
         Returns:
             torch.Tensor: Estimated angles in radians, shape [B, source_number].
         """
+        # ---- 1. Window sizes ----
+        # half = half-width of the soft-argmax window used for sub-grid accuracy.
+        # supp = radius blanked after each pick so the next source cannot land on the same lobe.
         B, G = spectrum.shape
         grid = self._grid_use if self._grid_use is not None else self.grid
         half = max(self.pick_min_cols, int(self.pick_half_frac * G))
         supp = max(half, int(self.pick_supp_frac * G))
         grid_idx = torch.arange(G, device=spectrum.device)
         offsets = torch.arange(-half, half + 1, device=spectrum.device)
+
+        # ---- 2. Candidate mask (disabled by default -- see the note below) ----
         # NOTE (falsified fix, kept OFF by default): restricting candidates to INTERIOR local
         # maxima looks obviously right -- a plain argmax can return a grid ENDPOINT, and in the
         # multipath sanity plots MFOCUSS's second estimate was visibly pinned at +/-70 deg when a
@@ -253,6 +288,10 @@ class MFOCUSS(ParentModel):
             work = spectrum.masked_fill(~is_peak, neg)
         else:
             work = work_any.clone()
+        # ---- 3. Greedy peak selection ----
+        # Take the strongest column, blank a +/-supp neighbourhood around it, repeat. The blanking
+        # is what stops all M estimates piling onto one broad lobe. work_any is the unmasked
+        # fallback for rows whose candidate set runs out.
         centers = []
         for _ in range(source_number):
             idx = work.argmax(dim=1)
@@ -262,6 +301,11 @@ class MFOCUSS(ParentModel):
             mask = (grid_idx.unsqueeze(0) - idx.unsqueeze(1)).abs() <= supp
             work = work.masked_fill(mask, neg)
             work_any = work_any.masked_fill(mask, neg)
+
+        # ---- 4. Sub-grid refinement ----
+        # A grid column is only accurate to half a cell, so take a softmax-weighted average of the
+        # angles in a +/-half window around each peak. This interpolates BETWEEN columns and is
+        # also differentiable, which is what DU-MFOCUSS needs to train through.
         out = torch.zeros(B, source_number, dtype=torch.float64, device=spectrum.device)
         for j, idx in enumerate(centers):
             win = (idx.unsqueeze(1) + offsets).clamp(0, G - 1)
@@ -280,6 +324,10 @@ class MFOCUSS(ParentModel):
         Returns:
             torch.Tensor: Estimated source count per sample, shape [B] (>= 1).
         """
+        # ---- Count significant interior local maxima ----
+        # A column counts as a source if it beats both neighbours AND clears count_peak_thr of the
+        # normalized peak -- the threshold is what separates real sources from spectral ripple.
+        # Clamped to >= 1: reporting zero sources is never useful downstream.
         c = spectrum[:, 1:-1]
         peaks = (c > spectrum[:, :-2]) & (c >= spectrum[:, 2:]) & (c > self.count_peak_thr)
         return peaks.sum(dim=1).clamp(min=1).float()
@@ -295,6 +343,10 @@ class MFOCUSS(ParentModel):
         Returns:
             tuple: (doa_prediction [B, M], source_estimation [B], None).
         """
+        # ---- 1. Source-adaptive operating point ----
+        # Everything below keys off the source count: lambda, the lp floor and the grid are all
+        # chosen differently for one source (maximize precision) than for a pair (maximize
+        # separability). See each block for the measurement behind it.
         src = int(sources_num) if sources_num is not None else self.M
         # Source-adaptive regularization: a single source uses the Hof high-lambda schedule
         # (smooth -> precise); >=2 sources use a low constant lambda (sharp -> resolves close
@@ -315,8 +367,10 @@ class MFOCUSS(ParentModel):
         single = src <= 1
         self._A_use = self.A_fine if single else self.A
         self._grid_use = self.grid_fine if single else self.grid
+        # ---- 2. Recover and read out ----
         spectrum = self._spectrum(x, lam_const, p_min_const)
         doa = self._pick(spectrum, src)
+        # ---- 3. Coarse-detect -> fine-refine (pairs only) ----
         if not single and getattr(self, "refine_pairs", True):
             # Coarse-detect -> FINE-refine (mirrors DU-MFOCUSS): re-run the recovery on the fine
             # dictionary and take a local soft-argmax around each coarse peak (accuracy only).
@@ -339,6 +393,7 @@ class MFOCUSS(ParentModel):
                 w = torch.softmax(vals / self.pick_temp, dim=1)
                 out[:, j] = (w * grid[win]).sum(dim=1)
             doa = out
+        # ---- 4. Return: angles, an independent source-count estimate, and no aux loss ----
         return doa, self._estimate_count(spectrum), None
 
     def _count_accuracy(self, sources_num, source_estimation):

@@ -123,16 +123,23 @@ class SPICE(ParentModel):
         coherence-robust. (A first-cut plain-SPICE fixed point without the criterion's
         proper weighting under-resolved badly — 50% pair MD — and was replaced.)
         """
+        # ---- 1. Sample covariance ----
+        # All IAA does is fit a MODEL covariance R(p) to this measured one, so R_hat is the only
+        # thing the data enters through.
         Y = x.to(torch.complex128)                                # [B, N, T]
         B, N, T = Y.shape
         A = self._A_use if self._A_use is not None else self.A    # [N, G]
         Rh = torch.einsum("bnt,bmt->bnm", Y, Y.conj()) / T        # sample covariance [B, N, N]
         pwr = torch.diagonal(Rh, dim1=-2, dim2=-1).real.mean(-1).clamp_min(self.mf_eps)   # [B]
         eye = torch.eye(N, dtype=torch.complex128, device=Y.device)
-        # init: matched-filter (periodogram) powers
+
+        # ---- 2. Initialize the per-angle powers ----
+        # Matched filter (periodogram): the cheapest unbiased guess at how much power sits at each
+        # grid angle, which the iteration then sharpens.
         anorm2 = (A.conj() * A).sum(dim=0).real.clamp_min(self.mf_eps)                    # [G]
         p = (torch.einsum("bnt,ng->bgt", Y, A.conj()).abs() ** 2).mean(dim=2) / anorm2 ** 2   # [B, G]
         p = p.clamp_min(self.p_floor)
+        # ---- 3. Initialize the noise power ----
         # Explicit noise power: R = A diag(p) A^H + s2 I. Without it the source atoms alone must
         # explain the isotropic noise, which a data-cone dictionary cannot do, and the iteration
         # distorts the source peak to absorb it (measured: single RMS 1.62 -> 1.32, reuse-15 MD
@@ -141,30 +148,51 @@ class SPICE(ParentModel):
         # unit atoms (the standard IAA noise-power update).
         s2 = (torch.linalg.eigvalsh(Rh)[:, 0].real.clamp_min(self.mf_eps) if self.noise_term
               else self.loading_factor * pwr)                                            # [B]
+        # ---- 4. IAA fixed-point iteration ----
+        # Each pass: rebuild the model covariance from the current powers, then re-estimate every
+        # power with a Capon (minimum-variance) filter derived from it. The filter is built from R
+        # and R is built from p, so each pass sharpens the previous one. No step size and no
+        # hyperparameters -- this is a fixed point, not a descent.
         for _ in range(self.num_iter):
+            # 4a. Model covariance implied by the current powers, plus the noise floor.
             R = torch.einsum("ng,bg,mg->bnm", A, p.to(torch.complex128), A.conj())
             R = R + s2.to(torch.complex128)[:, None, None] * eye                         # noise / load
+
+            # 4b. Whiten data and dictionary by R once, so the per-angle updates below are cheap.
             RiY = torch.linalg.solve(R, Y)                                           # [B, N, T]
             RiA = torch.linalg.solve(R, A.unsqueeze(0).expand(B, -1, -1))            # [B, N, G]
             RiA_e = torch.linalg.solve(R, eye.unsqueeze(0).expand(B, -1, -1)) if self.noise_term else None
+
+            # 4c. Capon power per angle: |a^H R^-1 y|^2 / (a^H R^-1 a)^2. The R^-1 weighting is what
+            # suppresses the OTHER angles' leakage, and is where IAA's resolution comes from.
             denom = torch.einsum("ng,bng->bg", A.conj(), RiA).real.clamp_min(self.mf_eps)  # a^H R^-1 a
             num = (torch.einsum("ng,bnt->bgt", A.conj(), RiY).abs() ** 2).mean(dim=2)  # mean_t |a^H R^-1 y|^2
             p = (num / denom ** 2).clamp_min(self.p_floor)
+
+            # 4d. Noise power by the SAME rule, applied to N orthonormal unit atoms instead of
+            # steering vectors -- so the noise floor is re-estimated rather than assumed fixed.
             if self.noise_term:                       # same update applied to the N unit atoms
                 nn = (torch.einsum("nm,bnt->bmt", eye.conj(), RiY).abs() ** 2).mean(dim=2)   # [B, N]
                 dd = torch.einsum("nm,bnm->bm", eye.conj(), RiA_e).real.clamp_min(self.mf_eps)
                 s2 = (nn / dd ** 2).mean(dim=1).clamp_min(self.p_floor)
+
+        # ---- 5. Peak-normalize ----
+        # The powers ARE the spectrum here; unlike MFOCUSS no row-norm collapse is needed.
         spectrum = p
         return spectrum / (spectrum.amax(dim=1, keepdim=True) + self.spectrum_norm_eps)
 
     def _pick(self, spectrum: torch.Tensor, source_number: int) -> torch.Tensor:
         """Greedy multi-peak picker with local soft refinement (mirrors MFOCUSS)."""
+        # ---- 1. Window sizes ----
+        # half = soft-argmax window for sub-grid accuracy; supp = radius blanked after each pick.
         B, G = spectrum.shape
         grid = self._grid_use if self._grid_use is not None else self.grid
         half = max(self.pick_min_cols, int(getattr(self, "pick_half_frac", 0.025) * G))
         supp = max(half, int(getattr(self, "pick_supp_frac", 0.03) * G))
         grid_idx = torch.arange(G, device=spectrum.device)
         offsets = torch.arange(-half, half + 1, device=spectrum.device)
+
+        # ---- 2. Restrict candidates to local maxima ----
         # LOCAL-MAXIMA candidates only: IAA's dense spectrum has fat peaks whose SHOULDERS
         # out-rank the true second peak under plain argmax+suppress (26% pair MD); shoulders
         # are not local maxima, so restricting candidates to peaks fixes it without a large
@@ -178,12 +206,20 @@ class SPICE(ParentModel):
         is_peak[:, 0] = spectrum[:, 0] > spectrum[:, 1]
         is_peak[:, -1] = spectrum[:, -1] > spectrum[:, -2]
         work = spectrum.masked_fill(~is_peak, float("-inf"))
+
+        # ---- 3. Greedy selection ----
+        # Strongest candidate, blank +/-supp around it, repeat -- so two estimates cannot land on
+        # the same lobe.
         centers = []
         for _ in range(source_number):
             idx = work.argmax(dim=1)
             centers.append(idx)
             mask = (grid_idx.unsqueeze(0) - idx.unsqueeze(1)).abs() <= supp
             work = work.masked_fill(mask, float("-inf"))
+
+        # ---- 4. Sub-grid refinement ----
+        # Softmax-weighted mean of the angles in a +/-half window, interpolating BETWEEN columns so
+        # accuracy is not capped at half a grid cell.
         out = torch.zeros(B, source_number, dtype=torch.float64, device=spectrum.device)
         for j, idx in enumerate(centers):
             win = (idx.unsqueeze(1) + offsets).clamp(0, G - 1)
@@ -194,20 +230,29 @@ class SPICE(ParentModel):
         return out
 
     def _estimate_count(self, spectrum: torch.Tensor) -> torch.Tensor:
+        """Counts significant interior local maxima as the source-count estimate."""
+        # A column counts as a source only if it beats both neighbours AND clears count_peak_thr of
+        # the normalized peak -- the threshold is what separates sources from spectral ripple.
+        # Clamped to >= 1 because reporting zero sources is never useful downstream.
         c = spectrum[:, 1:-1]
         peaks = (c > spectrum[:, :-2]) & (c >= spectrum[:, 2:]) & (c > self.count_peak_thr)
         return peaks.sum(dim=1).clamp(min=1).float()
 
     def forward(self, x: torch.Tensor, sources_num: int = None, phase: str = "test"):
-        src = int(sources_num) if sources_num is not None else self.M
+        # ---- 1. Grid choice ----
         # IAA is a DENSE spectral estimator (like MUSIC/Capon, no over-sparsification), so it
         # searches the FINE grid for ALL source counts — the coarse-pair-grid trick exists for
         # FOCUSS-type methods whose fine-grid recovery drops the weaker source; IAA's doesn't
         # (coarse pairs measured 26-28% MD vs fine-grid pairs far lower).
+        src = int(sources_num) if sources_num is not None else self.M
         self._A_use = self.A_fine
         self._grid_use = self.grid_fine
+
+        # ---- 2. Recover the spectrum (chunked: the B x N x G solves are memory-bound) ----
         spectrum = torch.cat([self._spectrum(x[i:i + self.eval_chunk])
                               for i in range(0, x.shape[0], self.eval_chunk)])
+
+        # ---- 3. Optional peak-search limit ----
         if self.peak_lim_deg is not None:
             # The DICTIONARY spans the full azimuth so that R = A diag(p) A^H can represent the
             # isotropic noise (see __init__), but sources only ever lie in the data cone. Searching
@@ -216,7 +261,12 @@ class SPICE(ParentModel):
             # Model the noise over the full sphere, but pick peaks only where sources can be.
             edge = (self._grid_use.abs() > np.deg2rad(self.peak_lim_deg)).unsqueeze(0)
             spectrum = spectrum.masked_fill(edge, 0.0)
+        # ---- 4. Read out the angles ----
         doa = self._pick(spectrum, src)
+
+        # ---- 5. Local ML polish ----
+        # IAA's structured covariance fits worse than R_hat when T > N, so its peak is coarse even
+        # when correctly located; a local beamscan refinement takes single-source 2.03 -> 0.44 deg.
         if self.refine_deg:
             doa = local_ml_refine(x, doa, self.A_fine, self.grid_fine,
                                   (self.A_fine.conj() * self.A_fine).sum(dim=0).real,

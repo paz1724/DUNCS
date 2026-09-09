@@ -269,16 +269,19 @@ class DUMFOCUSS(ParentModel):
         B = Y.shape[0]
         eye = torch.eye(A.shape[0], dtype=torch.complex128, device=Y.device)
 
+        # ---- 1. Scale-normalize the input ----
         # RMS-normalize the input (match MFOCUSS): brings the signal to RMS=1 so the
         # learned regularization lambda operates at a signal-scale-independent point.
         rms = torch.sqrt(torch.mean(Y.abs() ** 2, dim=(1, 2), keepdim=True)).clamp_min(self.rms_clamp_eps)
         Y = Y / rms.to(torch.complex128)
 
+        # ---- 2. Minimum-norm least-squares start ----
         # Least-squares (min-norm) initialization: s0 = A^H (A A^H)^-1 Y (match MFOCUSS).
         AAh = A @ A.conj().t()
         s = torch.einsum("gn,bnt->bgt", A.conj().t(),
                          torch.linalg.solve(AAh + self.ls_init_reg * eye, Y))  # [B, G, T]
 
+        # ---- 3. Optional angle-dependent p basis, and the iteration budget ----
         # Iteration budget parity with classical MFOCUSS (K=100): after the K learned layers,
         # optionally continue iterating with the LAST layer's learned (lambda, p, mcp), annealing p
         # down the same Hof tail (p -> 0.01). At init this reduces DU to MFOCUSS-(K+extend) — the
@@ -291,7 +294,14 @@ class DUMFOCUSS(ParentModel):
             ang_basis = torch.cos(np.pi * js[None, :] * g_norm[:, None])                          # [G, n_basis]
         extend = int(getattr(self, "extend_iters", 0))
         total_iters = self.num_iter + extend
+        # ---- 4. The unrolled layers ----
+        # This is the deep-unfolding core. Each pass k is one FOCUSS iteration, but its
+        # (lambda_k, p_k, m_k) are LEARNED parameters rather than a fixed schedule -- that is the
+        # entire difference from classical MFOCUSS, which runs the identical arithmetic with a
+        # hand-set anneal. Every operation below stays differentiable so the DoA loss can reach
+        # them through the readout.
         for k in range(total_iters):
+            # 4a. Current row energy per grid angle (the FOCUSS state).
             kk = min(k, self.num_iter - 1)                        # extension reuses the last layer
             row_norm = torch.linalg.norm(s, dim=2)                # [B, G] real
             if getattr(self, 'snapshot_normalized_reweight', True):
@@ -301,6 +311,8 @@ class DUMFOCUSS(ParentModel):
                 # RMS-over-snapshots makes the reweight T-invariant; T=8 behaviour is unchanged.
                 row_norm = row_norm * np.sqrt(self.reweight_ref_snapshots / s.shape[2])
 
+            # 4b. This layer's hyperparameters: either the plain learned per-layer values, or
+            # those corrected by a small map of the current iterate's state (adaptive_hyper).
             if getattr(self, "adaptive_hyper", False):
                 # Input-adaptive (lambda_k, p_k): correct the learned per-layer schedule by a
                 # zero-initialized linear map of the PREVIOUS iterate's state. Features:
@@ -320,6 +332,9 @@ class DUMFOCUSS(ParentModel):
                 lam_k = (F.softplus(self._raw_lambda[kk]) + self.lam_eps) * self._lam_scale
                 m_k = F.softplus(self._raw_mcp[kk])
 
+            # 4c. Extension tail (k >= num_iter): keep iterating with the LAST learned layer while
+            # annealing p down the classical Hof path, so DU gets the same iteration budget as the
+            # deployed MFOCUSS and cannot win merely by running longer.
             if k >= self.num_iter:
                 # extension tail: continue the Hof p-anneal from the last layer's p toward 0.01
                 decay = float(np.exp(-self.extend_p_decay * (k - self.num_iter + 1)))
@@ -329,6 +344,7 @@ class DUMFOCUSS(ParentModel):
             # already-strong atoms (relative magnitude rn in [0,1] from the PREVIOUS iterate),
             # countering FOCUSS's over-shrinkage of large coefficients (the minimax-concave idea:
             # taper the penalty as a coefficient grows). m_k~0 at init -> factor ~1 -> classical FOCUSS.
+            # 4d. Build the reweighting.
             rn = row_norm / (row_norm.amax(dim=1, keepdim=True) + self.rn_eps)   # [B, G] relative magnitude
             if use_ang:
                 p_prof = (ang_basis @ self._ang_p[kk].to(torch.float64)).unsqueeze(0)    # [1, G], init 0
@@ -339,6 +355,9 @@ class DUMFOCUSS(ParentModel):
                 m_k = torch.zeros_like(m_k)      # MCP disabled -> plain FOCUSS reweighting
             w = (row_norm + self.reweight_floor) ** (1.0 - p_g / 2.0) * (1.0 + m_k * rn)   # floor matches MFOCUSS
 
+            # 4e. Weighted regularized least squares, s = W (A W)^+ Y. Solved in the N x N sensor
+            # space (N=5) rather than the G x G angle space -- same answer, far cheaper, and the
+            # small solve is what keeps backprop through K layers affordable.
             AW = A.unsqueeze(0) * w.unsqueeze(1).to(torch.complex128)   # [B, N, G]
             gram = torch.einsum("bng,bmg->bnm", AW, AW.conj())    # [B, N, N]
             lam_b = lam_k if lam_k.dim() else lam_k.expand(B)     # per-sample lambda [B]
@@ -347,6 +366,9 @@ class DUMFOCUSS(ParentModel):
             q = torch.einsum("bng,bnt->bgt", AW.conj(), inv_Y)    # [B, G, T]
             s = w.unsqueeze(2).to(torch.complex128) * q           # [B, G, T]
 
+        # ---- 5. Collapse to an angular spectrum ----
+        # Energy per grid angle across snapshots, peak-normalized. Cached because the training
+        # auxiliary loss is computed on the spectrum itself, not only on the read-out angles.
         spectrum = torch.linalg.norm(s, dim=2)                    # [B, G] real power
         spectrum = spectrum / (spectrum.amax(dim=1, keepdim=True) + self.spectrum_norm_eps)
         self._last_spectrum = spectrum                            # for the training aux loss
@@ -362,6 +384,9 @@ class DUMFOCUSS(ParentModel):
         Returns:
             torch.Tensor: Estimated angles in radians, shape [B, source_number].
         """
+        # ---- 1. Window sizes and the LEARNED readout temperature ----
+        # temp is a trained parameter: the network can decide how sharp its own peak readout is.
+        # softplus keeps it positive without a hard constraint.
         B, G = spectrum.shape
         grid = self._grid_use if self._grid_use is not None else self.grid
         half = max(self.pick_min_cols, int(self.pick_half_frac * G))   # local soft-argmax window (~sub-min_gap)
@@ -373,6 +398,7 @@ class DUMFOCUSS(ParentModel):
             # to (lambda_k, p_k, m_k). A 0.3 floor during training keeps the readout informative;
             # EVAL keeps the learned sharp temperature (readout accuracy unchanged).
             temp = torch.clamp(temp, min=self.train_temp_floor)
+        # ---- 2. Locate the peaks (non-differentiable) ----
         grid_idx = torch.arange(G, device=spectrum.device)
         offsets = torch.arange(-half, half + 1, device=spectrum.device)
         # Greedy peak picking on a detached copy: take the argmax, suppress its
@@ -385,6 +411,7 @@ class DUMFOCUSS(ParentModel):
             centers.append(idx)
             mask = (grid_idx.unsqueeze(0) - idx.unsqueeze(1)).abs() <= supp      # [B, G]
             work = work.masked_fill(mask, float("-inf"))
+        # ---- 3a. EVAL readout: hard peak + parabolic interpolation ----
         out = torch.zeros(B, source_number, dtype=torch.float64, device=spectrum.device)
         if (not self.training) and getattr(self, "eval_parabolic", True) and G >= 3:
             # EVAL readout: hard peak + 3-point parabolic sub-grid interpolation.
@@ -406,6 +433,11 @@ class DUMFOCUSS(ParentModel):
                 delta = delta.clamp(-1.0, 1.0)            # a valid interior peak lies within one cell
                 out[:, j] = grid[c].to(torch.float64) + delta * step
             return out
+        # ---- 3b. TRAIN readout: local soft-argmax ----
+        # The gradient path. WHICH cell is the peak is a discrete choice with no gradient, so the
+        # angle is instead a softmax-weighted average of the angles in a window around it: that is
+        # differentiable in the spectrum values, which is how the loss reaches the unrolled
+        # (lambda_k, p_k, m_k) parameters at all.
         for j, idx in enumerate(centers):
             win = (idx.unsqueeze(1) + offsets).clamp(0, G - 1)                   # [B, W]
             vals = torch.gather(spectrum, 1, win)                               # [B, W]

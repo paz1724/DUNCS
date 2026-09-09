@@ -111,13 +111,20 @@ class DoAFormer(ParentModel):
         Returns:
             torch.Tensor: Real-valued tokens, shape [B, n_tok, 2N].
         """
+        # ---- Build the token sequence the transformer attends over ----
+        # Complex data cannot be fed to a real-valued transformer, so every token is a row of
+        # [Re | Im] concatenated over the N sensors. Two token sources, optionally combined.
         x = x.to(torch.complex64)
         toks = []
+
+        # ---- 1. Covariance tokens: N tokens, one per sensor row of R ----
+        # R is snapshot-order invariant and summarizes the spatial statistics compactly.
         if self.input_mode in ("cov", "both"):
             Rx = torch.einsum("bnt,bmt->bnm", x, x.conj()) / x.shape[-1]   # [B, N, N]
             # Per-sample unit-Frobenius normalization keeps the transformer stable.
             Rx = Rx / (torch.linalg.norm(Rx, dim=(1, 2), keepdim=True) + 1e-6)
             toks.append(torch.cat((Rx.real, Rx.imag), dim=2))             # [B, N, 2N]
+        # ---- 2. Snapshot tokens: T tokens, one per time sample ----
         if self.input_mode in ("snapshots", "both"):
             # Raw snapshots as T tokens of [Re, Im] over the N sensors — preserve the
             # per-snapshot phase that distinguishes front from back-lobe on a measured array.
@@ -138,18 +145,37 @@ class DoAFormer(ParentModel):
         Returns:
             tuple: (doa_prediction [B, M], source_estimation [B], count_logits [B, Q]).
         """
+        # ---- 1. How many sources to decode ----
+        # One query per source, capped by the fixed query bank Q the model was built with.
         B = x.shape[0]
         M = int(sources_num) if sources_num is not None else self.Q
         M = max(1, min(M, self.Q))
+
+        # ---- 2. Encode the measurement ----
+        # Project tokens to d_model, add learned positional embeddings (the token order carries
+        # sensor identity, which the array geometry depends on), then self-attend.
         tokens = self.input_norm(self.input_proj(self._tokens(x))) + self.pos_embed.unsqueeze(0)  # [B, N, d]
         memory = self.encoder(tokens)                                            # [B, N, d]
+
+        # ---- 3. Decode one query per source ----
+        # SET PREDICTION, as in DETR: the M learned queries cross-attend to the encoded measurement
+        # and each emerges as one source. This is what makes the model GRIDLESS -- angles are
+        # regressed directly, never picked off a spectrum.
         queries = self.query_embed[:M].unsqueeze(0).expand(B, -1, -1)            # [B, M, d]
         decoded = self.decoder(queries, memory)                                  # [B, M, d]
 
+        # ---- 4. Heads ----
+        # tanh * angle_scale bounds every prediction inside the field of view by construction, so
+        # the model cannot emit an impossible angle. The count head reads the pooled memory.
         angles = torch.tanh(self.angle_head(decoded).squeeze(-1)) * self.angle_scale  # [B, M]
         count_logits = self.count_head(memory.mean(dim=1))                       # [B, Q]
         source_estimation = (count_logits.argmax(dim=1) + 1).float()             # [B]
         angles = angles.to(torch.float64)
+
+        # ---- 5. Eval-only local ML refinement ----
+        # A regression head has no sub-grid refinement of its own and floors at ~1.07 deg
+        # regardless of SNR (model-capacity bias, not noise). Refining locally: 1.27 -> 0.44 deg.
+        # Skipped while training so the graph stays end-to-end differentiable.
         if self.refine_deg and not self.training:   # eval-only: keep training end-to-end differentiable
             angles = local_ml_refine(x, angles, self.refine_A, self.refine_grid_rad,
                                      (self.refine_A.conj() * self.refine_A).sum(dim=0).real,
@@ -181,9 +207,19 @@ class DoAFormer(ParentModel):
             tuple: (loss, acc, None) where loss combines RMSPE and a count
                 cross-entropy, and acc is the source-count accuracy count.
         """
+        # ---- 1. Forward ----
         x, sources_num, angles = self._prepare_batch(batch)
         doa_prediction, source_estimation, count_logits = self(x, sources_num)
+
+        # ---- 2. Angle loss ----
+        # RMSPE is permutation-invariant (Hungarian-matched inside), which a SET predictor needs:
+        # query k is not tied to source k, so an ordinary MSE would penalise correct-but-permuted
+        # predictions.
         loss = self.criterion(doa_prediction, angles)
+
+        # ---- 3. Count loss ----
+        # Cross-entropy on the source count, trained jointly so the model can report how many
+        # sources it believes are present rather than always emitting M.
         target = torch.full((count_logits.shape[0],), int(sources_num) - 1,
                             dtype=torch.long, device=count_logits.device)
         loss = loss + self.count_loss(count_logits, target)

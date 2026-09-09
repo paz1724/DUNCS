@@ -111,10 +111,20 @@ class SubspaceNet(ParentModel):
             Returns:
                 Rz: the surrogate covariance matrix of shape [Batch size, N, N]
         """
+        # ---- 1. Input features: tau lagged sample covariances ----
+        # Not the raw snapshots -- the empirical autocorrelation at lags 0..tau-1, stacked as
+        # [Re | Im] channels. Feeding the CNN second-order statistics rather than raw data makes it
+        # invariant to snapshot order and to the signal waveform.
         x = self.pre_processing(X)
         # Rx_tau shape: [Batch size, tau, 2N, N]
         N = x.shape[-1]
         self.batch_size = x.shape[0]
+
+        # ---- 2. Encoder-decoder CNN ----
+        # Three strided conv blocks compress the lag stack, three deconv blocks expand it back to a
+        # single N x N map. anti_rectifier keeps both signs of the activation (concatenating
+        # relu(x) and relu(-x)) rather than discarding half -- phase information lives in the sign,
+        # so a plain ReLU would throw away the very thing the DoA depends on.
         ############################
         ## Architecture flow ##
         # CNN block #1
@@ -135,6 +145,7 @@ class SubspaceNet(ParentModel):
         # DCNN block #4
         x = self.DropOut(x)
         Rx = self.deconv4(x)
+        # ---- 3. Reassemble a complex matrix from the two real channels ----
         # Reshape Output shape: [Batch size, 2N, N]
         Rx_View = Rx.view(Rx.size(0), Rx.size(2), Rx.size(3))
         # Real and Imaginary Reconstruction
@@ -142,6 +153,12 @@ class SubspaceNet(ParentModel):
         Rx_imag = Rx_View[:, N:, :]  # Shape: [Batch size, N, N])
         Kx_tag = torch.complex(Rx_real, Rx_imag)  # Shape: [Batch size, N, N])
         Kx_tag = self.norm1(Kx_tag)
+        # ---- 4. Force the output to be a VALID covariance ----
+        # The CNN emits an arbitrary complex matrix, which need not be Hermitian or positive
+        # semi-definite -- and a subspace method would be meaningless on one that is not. The Gram
+        # product K K^H guarantees both by construction, and the diagonal load keeps the
+        # eigendecomposition differentiable and well-conditioned. This is what lets a classical
+        # algorithm sit downstream of a network and still be trained through.
         # Apply Gram operation diagonal loading
         Rz = gram_diagonal_overload(
             Kx=Kx_tag, eps=1, batch_size=self.batch_size
@@ -245,9 +262,14 @@ class SubspaceNet(ParentModel):
 
         """
 
+        # ---- 1. CNN -> surrogate covariance ----
+        # The whole idea of SubspaceNet: instead of handing the sample covariance to a subspace
+        # method, learn a SURROGATE covariance whose eigen-structure is easier to separate. The
+        # classical algorithm downstream is unchanged -- only its input is learned.
         # Feed surrogate covariance to the differentiable subspace algorithm
         Rz = self.get_learned_covariance(x)
 
+        # ---- 2. Optional calibration into ideal-ULA coordinates ----
         # Array calibration: ESPRIT and Root-MUSIC both assume an ideal lambda/2-ULA, but the recorded
         # manifold is non-ideal. A fixed least-squares calibration C (C a_rec(theta) ~ a_ideal(theta))
         # maps the covariance into ideal-ULA coordinates so their arcsin / polynomial-root readout applies.
@@ -255,6 +277,9 @@ class SubspaceNet(ParentModel):
             C = self.calibration.to(Rz.dtype)
             Rz = torch.einsum("mn,bnk,lk->bml", C, Rz, C.conj())
 
+        # ---- 3. Run the differentiable subspace method and unpack it ----
+        # Each method returns a different tuple, so the branches below exist to normalize the
+        # return shape -- not because the estimation differs.
         if self.field_type == "Far":
             method_output = self.diff_method(Rz, sources_num)
             if isinstance(self.diff_method, RootMusic):
@@ -276,6 +301,7 @@ class SubspaceNet(ParentModel):
             else:
                 raise Exception(f"SubspaceNet.forward: Method {self.diff_method} is not defined for SubspaceNet")
 
+        # ---- 4. Near field: angle and range are estimated jointly, or range alone ----
         elif self.field_type == "Near":
             if known_angles is None:
                 predictions, sources_estimation, eigen_regularization = self.diff_method(

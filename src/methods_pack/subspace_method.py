@@ -39,15 +39,25 @@ class SubspaceMethod(nn.Module):
             tuple: (signal_subspace [B, N, M], noise_subspace [B, N, N-M],
                 source_estimation, l_eig regularization term).
         """
+        # ---- 1. Eigendecompose ----
+        # The whole subspace family rests on one fact: for M sources in white noise the covariance
+        # has M large eigenvalues (signal) and N-M small equal ones (noise), and their eigenvectors
+        # span orthogonal subspaces. Diagonal loading keeps the decomposition conditioned at low SNR.
         covariance = diag_loading(covariance, training=self.training)  # For training stability in low SNR
         eigenvalues, eigenvectors = torch.linalg.eigh(covariance)
+
+        # ---- 2. Sort eigenvectors by descending eigenvalue ----
+        # eigh returns ASCENDING order, so the split below would take the wrong half without this.
         sorted_idx = torch.argsort(torch.real(eigenvalues), descending=True)
         sorted_eigvectors = torch.gather(eigenvectors, 2,
                                          sorted_idx.unsqueeze(-1).expand(-1, -1, covariance.shape[-1]).transpose(1, 2))
+        # ---- 3. Decide where to split ----
+        # Either the caller supplies M, or it is inferred from the eigenvalue profile.
         # number of sources estimation
         self._num_sources = number_of_sources
         source_estimation, l_eig = self.estimate_number_of_sources(eigenvalues,
                                                                    number_of_sources=number_of_sources)
+        # ---- 4. Split into signal (top M) and noise (remaining N-M) subspaces ----
         if number_of_sources is None:
             warnings.warn("Number of sources is not defined, using the number of sources estimation.")
         # if source_estimation == sorted_eigvectors.shape[2]:
@@ -72,12 +82,22 @@ class SubspaceMethod(nn.Module):
             tuple: (source_estimation, l_eig) where l_eig is a training-time
                 regularization/loss term (None outside training or for None method).
         """
+        # ---- 1. Sort the eigenvalue profile ----
+        # Every criterion below reads the SHAPE of this descending profile: M sources produce a
+        # visible drop between the M-th and (M+1)-th eigenvalue, and they differ only in how they
+        # decide where that drop is.
         batch_size = eigenvalues.shape[0]
         sorted_eigenvals = torch.sort(torch.real(eigenvalues), descending=True, dim=1).values
         self.normalized_eigenvals = sorted_eigenvals
         l_eig = None
+
+        # ---- 2a. No estimator requested ----
         if self.model_order_estimation is None:
             return None, None
+
+        # ---- 2b. THRESHOLD: count eigenvalues above a fraction of the largest ----
+        # Simplest rule and the only differentiable one, so it can also produce a training
+        # regularization term that pushes the eigen-profile toward the true source count.
         elif self.model_order_estimation.lower().startswith("threshold"):
             self.normalized_eigenvals = sorted_eigenvals / sorted_eigenvals[:, 0][:, None]
             source_estimation = torch.linalg.norm(
@@ -88,6 +108,9 @@ class SubspaceMethod(nn.Module):
             # return regularization term if training
             if self.training:
                 l_eig = self.eigen_regularization(number_of_sources)
+        # ---- 2c. MDL / AIC / SORTE: score every hypothesis M = 1..N-1, keep the best ----
+        # Information-criterion style: each M is scored, and the minimizing M wins. Vectorized over
+        # the batch by masked running-minimum rather than a per-sample argmin.
         elif self.model_order_estimation.lower() in ["mdl", "aic", "sorte"]:
             # mdl -> calculate the value of the mdl test for each number of sources
             # and choose the number of sources that minimizes the mdl test
@@ -106,6 +129,10 @@ class SubspaceMethod(nn.Module):
                 # if self.training and m == number_of_sources:
                 #     # l_eig = torch.sum(test)
                 #     l_eig = test
+            # ---- 3. Training signal ----
+            # Treat the per-hypothesis scores as logits (negated, since lower = better) and apply
+            # cross-entropy against the true count, so the model learns to shape its eigen-profile
+            # into one whose model-order test picks the right M.
             if self.training:
                 hypothesis_results = torch.stack(hypothesis_results, dim=1)  # (B, N-3)
                 logits = -hypothesis_results
@@ -136,6 +163,9 @@ class SubspaceMethod(nn.Module):
         else:
             N_eff = self.system_model.params.N
 
+        # ---- MDL / AIC: log-likelihood + a complexity penalty ----
+        # Both trade fit against model size; they differ ONLY in the penalty weight, log(T) vs 2,
+        # which is why MDL is the more conservative of the two (it charges more per source).
         if moe in ["mdl", "aic"]:
             # extract the number of snapshots and the number of antennas
             T = self.system_model.params.T
@@ -145,6 +175,10 @@ class SubspaceMethod(nn.Module):
             ll = self.get_ll(eigenvalues, M)
             return ll + penalty
 
+        # ---- SORTE: variance ratio of successive eigenvalue GAPS ----
+        # Threshold-free and scale-free. Inside the noise floor the gaps are small and similar, so
+        # their variance is low; the gap at the true M stands out. The ratio is minimized at the
+        # correct source count. Needs at least two gaps on each side, hence the guard.
         elif moe == "sorte":
             if M >= N_eff - 2:
                 return torch.full((eigenvalues.shape[0],), float("inf"), device=eigenvalues.device)

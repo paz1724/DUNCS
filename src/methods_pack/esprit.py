@@ -36,16 +36,33 @@ class ESPRIT(SubspaceMethod):
         Returns:
             tuple: (prediction angles [B, M], sources_estimation, regularization term).
         """
-        # get the signal subspace
+        # ---- 1. Signal subspace ----
+        # Eigendecompose the covariance and keep the M dominant eigenvectors. Unlike MUSIC, ESPRIT
+        # uses the SIGNAL subspace and never searches a grid -- so it is gridless and has no
+        # resolution limit imposed by grid spacing.
         signal_subspace, _, sources_estimation, regularization = self.subspace_separation(
             cov,
             number_of_sources=number_of_sources
         )
-        # create 2 overlapping matrices
+
+        # ---- 2. Rotational invariance ----
+        # ESPRIT's premise: for a uniformly spaced array the sub-array starting at sensor 0 and the
+        # one starting at sensor 1 see the SAME sources differing only by a fixed phase shift per
+        # source. Dropping the last / first row builds those two shifted views.
         upper = signal_subspace[:, :-1]
         lower = signal_subspace[:, 1:]
+
+        # ---- 3. Solve for the rotation operator ----
+        # The least-squares map taking one sub-array to the other. Its eigenvalues are exactly the
+        # per-source phase shifts, so the DoAs fall out of an eigendecomposition rather than a
+        # search -- which is why ESPRIT is cheap compared with MUSIC.
         phi = torch.linalg.lstsq(upper, lower)[0]  # identical to pinv(A) @ B but faster and stable.
         eigvalues = torch.linalg.eigvals(phi)
+
+        # ---- 4. Phase -> angle ----
+        # Invert the phase-to-angle relation. d_lambda is the element spacing in wavelengths, so a
+        # NON-ideal spacing still reads the correct angle; the clamp guards arcsin against phases
+        # pushed just outside [-1, 1] by noise.
         eigvals_phase = torch.angle(eigvalues)
         prediction = self.doa_sign * torch.arcsin(
             torch.clamp(eigvals_phase / (2 * torch.pi * self.d_lambda), -1.0, 1.0))
