@@ -423,6 +423,7 @@ def train_model(training_params: TrainingParams, checkpoint_path=None) -> dict:
         loss_train_list (list): List of training losses per epoch.
         loss_valid_list (list): List of validation losses per epoch.
     """
+    # ---- 1. Set up model, optimizer and the per-epoch history buffers ----
     # Initialize model and optimizer
     model = training_params.model
     model = model.to(device)
@@ -446,8 +447,10 @@ def train_model(training_params: TrainingParams, checkpoint_path=None) -> dict:
 
     # early = EarlyStopping(mode="min", patience=15, min_delta=1e-4, restore_best=True)
     # Initialize tqdm once for the entire training process
+    # ---- 2. Epoch loop ----
     with tqdm(total=total_iterations, desc="Total Training Progress", unit="batch") as pbar:
         for epoch in range(training_params.epochs):
+            # 2a. Train one pass over the training set.
             epoch_train_loss = 0.0
             epoch_train_reg_loss = 0.0
             epoch_train_acc = 0.0
@@ -459,7 +462,8 @@ def train_model(training_params: TrainingParams, checkpoint_path=None) -> dict:
                 # reset gradients
                 optimizer.zero_grad()
 
-                # Forward pass
+                # Forward pass. Each model owns its own training_step, so this loop stays model
+                # agnostic; some return just a loss and others (loss, acc, eigen_regularization).
                 loss = model.training_step(data)
                 if isinstance(loss, tuple):
                     loss, acc, eigen_regularization = loss
@@ -474,6 +478,9 @@ def train_model(training_params: TrainingParams, checkpoint_path=None) -> dict:
 
                 train_length += data[0].shape[0]
 
+                # Backward pass, guarded: these models eigendecompose / invert matrices inside the
+                # graph, and a degenerate batch can make that fail. Skip the offending batch rather
+                # than losing the whole run.
                 try:
                     loss.backward()  # retain_graph=True
                 except RuntimeError as r:
@@ -487,6 +494,8 @@ def train_model(training_params: TrainingParams, checkpoint_path=None) -> dict:
 
                 pbar.update(1)
 
+            # 2b. End of epoch: average the accumulated losses over SAMPLES (not batches), so the
+            # number does not shift when the batch size changes.
             ####################################################################################
             epoch_train_loss /= train_length
             epoch_train_reg_loss /= train_length
@@ -495,10 +504,15 @@ def train_model(training_params: TrainingParams, checkpoint_path=None) -> dict:
             loss_train_list.append(epoch_train_loss)
             reg_loss_train_list.append(epoch_train_reg_loss)
 
+            # 2c. Validation. Runs the model in eval mode, which for several models here selects a
+            # DIFFERENT readout from training (hard peaks vs soft-argmax) -- so this number reflects
+            # deployed behaviour, not the training surrogate.
             # Calculate evaluation loss
             valid_loss = evaluate_dnn_model(model, training_params.valid_dataset, mode="valid")
             loss_valid_list.append(valid_loss.get("loss"))
 
+            # 2d. Scheduler step. Batch-wise schedulers already stepped in the inner loop; only
+            # the epoch-wise ones are advanced here, and ReduceLROnPlateau needs the metric.
             # Update scheduler
             if isinstance(training_params.scheduler, lr_scheduler.ReduceLROnPlateau):
                 training_params.scheduler.step(loss_valid_list[-1])

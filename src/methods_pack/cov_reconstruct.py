@@ -388,6 +388,10 @@ def sample_covariance(x: torch.Tensor):
     --------
         Rx (torch.Tensor): Covariance matrix.
     """
+    # ---- R = x x^H / T ----
+    # The maximum-likelihood covariance estimate for Gaussian data. Dividing by T (not T-1) matches
+    # the ML convention every method in this repo assumes. A 2-D input is promoted to a batch of
+    # one so callers can pass a single sample.
     if x.dim() == 2:
         x = x[None, :, :]
     batch_size, sensor_number, samples_number = x.shape

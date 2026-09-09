@@ -70,15 +70,22 @@ def create_dataset(
         tuple: A tuple containing the desired dataset comprised of (X-samples, Y-labels).
 
     """
+    # ---- Build the dataset as CLEAN observations + NOISE TEMPLATES, stored separately ----
+    # The two are deliberately NOT summed here. Keeping them apart means one generated dataset can
+    # be replayed at any SNR by rescaling the noise at load time, instead of regenerating a fresh
+    # dataset per SNR -- and it keeps the underlying scene identical across an SNR sweep, so the
+    # comparison isolates SNR rather than confounding it with a different random scene.
     clean_observations, noise_templates, labels, sources_num = [], [], [], []
 
 
     for _ in tqdm(range(samples_size), desc="Creating Base Dataset"):
+        # ---- 1. Draw a scene: source count, then angles (and ranges in the near field) ----
         M = resolve_param(samples_model.params.M)
         # Samples model creation
         samples_model.set_doa(true_doa, M, angle_pool=angle_pool)
         if samples_model.params.field_type.lower().endswith("near"):
             samples_model.set_range(true_range, M)
+        # ---- 2. Render that scene through the array manifold ----
         # Observations matrix creation
         clean_obs, noise_temp = samples_model.samples_creation(noise_mean=0, noise_variance=1, signal_mean=0,
                                                                 signal_variance=1, source_number=M)

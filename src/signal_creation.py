@@ -195,10 +195,17 @@ class Samples(SystemModel):
             Exception: If the signal_type is not defined.
 
         """
+        # ---- 1. Source waveforms and sensor noise, generated independently ----
+        # They are returned SEPARATELY rather than pre-summed so the caller can set the SNR by
+        # scaling one against the other after the fact.
         # Generate signal matrix
         signal = self.signal_creation(source_number, signal_mean, signal_variance)
         # Generate noise matrix
         noise = self.noise_creation(noise_mean, noise_variance)
+
+        # ---- 2. NARROWBAND: one steering matrix, applied once ----
+        # x = A(theta) s. A single carrier means the array response is frequency-independent, so
+        # the whole observation is one matrix product.
         # Generate Narrowband samples
         if self.params.signal_type.startswith("NarrowBand"):
             if self.params.field_type.startswith("Far"):
@@ -210,6 +217,11 @@ class Samples(SystemModel):
             else:
                 raise Exception(f"Samples.params.field_type: Field type {self.params.field_type} is not defined")
             return clear_obs, noise
+        # ---- 3. BROADBAND: per-frequency steering, then back to the time domain ----
+        # The array response depends on frequency, so a broadband source cannot use one steering
+        # matrix. Build the observation bin by bin in the FREQUENCY domain and inverse-FFT at the
+        # end. The index-to-frequency remap below is standard FFT ordering: bins above Nyquist
+        # represent NEGATIVE frequencies.
         # Generate Broadband samples
         elif self.params.signal_type.startswith("Broadband"):
             samples = []

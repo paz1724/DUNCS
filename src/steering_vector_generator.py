@@ -80,6 +80,10 @@ class SteeringVectorGenerator:
         else:
             raise ValueError(f"Unknown field type: {self.params.field_type}")
 
+    # NOTE: linear interpolation between measured nodes makes |a(theta)| dip slightly mid-cell and
+    # peak ON the nodes; that ripple is why the sparse methods unit-normalize their dictionary
+    # atoms (see _unit_norm_cols in mfocuss.py) -- without it the arg-max snaps to the node grid.
+
     def _generate_far_field(self, theta, f=1):
         """Computes the far-field plane-wave steering vector with bias/mislocation/noise effects.
 

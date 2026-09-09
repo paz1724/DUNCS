@@ -57,13 +57,19 @@ def evaluate_dnn_model(model: nn.Module, dataset: DataLoader, mode: str = "test"
         Exception: If the evaluation loss is not implemented for the model type.
     """
 
-    # Initialize values
+    # ---- 1. Accumulators ----
     overall_loss_angle = 0.0
     overall_accuracy = None
     test_length = 0
+
+    # ---- 2. Eval mode + no grad ----
+    # model.eval() is not cosmetic here: several models switch READOUT on it (hard peaks instead of
+    # the differentiable soft-argmax, eval-only local refinement), so forgetting it would score the
+    # training surrogate rather than the deployed estimator.
     # Set model to eval mode
     model.eval()
     with (torch.no_grad()):
+        # ---- 3. Accumulate over batches ----
         for data in dataset:
             if mode == "valid":
                 eval_loss = model.validation_step(data)
@@ -80,11 +86,15 @@ def evaluate_dnn_model(model: nn.Module, dataset: DataLoader, mode: str = "test"
                 if overall_accuracy is None:
                     overall_accuracy = 0.0
                 overall_accuracy += acc
+            # Count SAMPLES, not batches, so the average does not shift with batch size; a 2-D
+            # input is a single unbatched sample.
             if data[0].dim() == 2:
                 test_length += 1
             else:
                 test_length += data[0].shape[0]
             ############################################################################################################
+
+    # ---- 4. Reduce to per-sample averages ----
     overall_loss_angle /= test_length
     if overall_accuracy is not None:
         overall_accuracy /= test_length
