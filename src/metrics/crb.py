@@ -125,6 +125,10 @@ def calculate_sncr_crb(
         torch.Tensor: Per-angle variances of shape (B,K) in rad^2 if return_per_angle,
             otherwise angle-averaged RMSE of shape (B,) in radians.
     """
+    # ---- 1. Selection matrix Phi: which virtual-ULA sensors physically exist ----
+    # The CRB is derived on the full virtual ULA (U sensors) and then RESTRICTED to the lags the
+    # sparse array actually measures; Phi is that restriction. This is what makes the bound
+    # specific to a sparse geometry rather than to a filled array.
     device = sparse_array.device if isinstance(sparse_array, torch.Tensor) else (
         "cuda" if torch.cuda.is_available() else "cpu"
     )
@@ -137,10 +141,15 @@ def calculate_sncr_crb(
     Phi[torch.arange(M, device=device), Sidx] = 1.0
     Phi_c = Phi.to(dtype_c)
 
+    # ---- 2. Normalize input shapes ----
     # --- broadcast inputs ---
     thetas, snr_db_t, L_t = _broadcast_theta_snr_L(thetas_rad, snr_db, L_snapshots, device)
     B, K = thetas.shape
 
+    # ---- 3. Steering vectors and their ANGLE DERIVATIVES ----
+    # dA/dtheta is the heart of the bound: it measures how fast the array response changes as a
+    # source moves. A response that changes quickly with angle is easy to localize (low variance);
+    # a slowly changing one is not. This derivative is where aperture enters the CRB.
     # --- ULA steering and derivatives on U sensors ---
     u = torch.arange(U, dtype=torch.float64, device=device)  # 0..U-1
     phase_const = 2.0 * math.pi * d
@@ -151,18 +160,25 @@ def calculate_sncr_crb(
     A = torch.exp(1j * phase).to(dtype_c)                         # (B,U,K)
     dA = ((-1j * phase_const) * u.view(1, U, 1) * cos_t.view(B, 1, K)).to(dtype_c) * A
 
-    # --- stochastic powers from SNR: p_k = (SNR_lin)*σ^2
+    # ---- 4. Source powers from the requested SNR ----
+    # --- stochastic powers from SNR: p_k = (SNR_lin)*sigma^2
     snr_lin = 10.0 ** (snr_db_t / 10.0)         # (B,K)
     p = (snr_lin * float(sigma2)).to(torch.float64)  # (B,K)
     p_c = p.to(dtype_c)
 
+    # ---- 5. Model covariances ----
+    # Ryy is what the FULL virtual ULA would see; Rxx is what the sparse array actually measures.
     # --- virtual covariance Ryy and measured Rxx ---
     Ap = A * p_c.view(B, 1, K)
     Iu = torch.eye(U, dtype=dtype_c, device=device)
     Ryy = Ap @ A.conj().transpose(-2, -1) + float(sigma2) * Iu              # (B,U,U)
     Rxx = torch.einsum('mu, buv, nv -> bmn', Phi_c, Ryy, Phi_c.conj())      # (B,M,M)
 
-    # --- S = Φ^T (Φ Ryy Φ^H)^{-1} Φ  via Cholesky solve (exact inverse, numerically stable) ---
+    # ---- 6. Whitening operator S ----
+    # Inverse-covariance weighting: measurement directions that are already noisy contribute less
+    # information. Cholesky rather than a direct inverse because Rxx is Hermitian PSD, which makes
+    # the factorization both cheaper and numerically stabler.
+    # --- S = Phi^T (Phi Ryy Phi^H)^{-1} Phi  via Cholesky solve (exact inverse, numerically stable) ---
     S_list = []
     for b in range(B):
         Lc = torch.linalg.cholesky(Rxx[b])                # Rxx = L L^H
@@ -171,7 +187,11 @@ def calculate_sncr_crb(
         S_list.append(S_b)
     S_eff = torch.stack(S_list, dim=0).contiguous()       # (B,U,U)
 
-    # --- Jacobian in ULA domain: J_y = [ D_theta | D_p | d_sigma ]  (size U^2 × (2K+1)) ---
+    # ---- 7. Jacobian of the covariance w.r.t. ALL unknowns ----
+    # Columns for the angles, the source powers AND the noise variance. Powers and noise are
+    # nuisance parameters, but they must be included: not knowing them costs angle accuracy, and
+    # omitting them would produce an optimistically low bound.
+    # --- Jacobian in ULA domain: J_y = [ D_theta | D_p | d_sigma ]  (size U^2 x (2K+1)) ---
     outer_aa   = torch.einsum('buk,bvk->buvk', A,  A.conj())    # (B,U,U,K)
     outer_da_a = torch.einsum('buk,bvk->buvk', dA, A.conj())
     outer_a_da = torch.einsum('buk,bvk->buvk', A,  dA.conj())

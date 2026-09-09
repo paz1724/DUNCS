@@ -168,15 +168,23 @@ class RMSPELoss(nn.Module):
         Raises:
             None
         """
+        # ---- 1. All-pairs error matrix ----
+        # The model outputs a SET of angles with no inherent order, so prediction k is not tied to
+        # source k. Score every prediction against every target first, then decide the pairing.
         B, num_sources = doa_predictions.shape
 
         # Compute the pairwise cost matrix for angles (B, num_sources, num_sources)
         diff_matrix_angle = self.compute_modulo_error(doa_predictions.unsqueeze(2), doa_targets.unsqueeze(1))
         cost_matrix_angle = diff_matrix_angle ** 2
 
+        # ---- 2. Optimal pairing (Hungarian) ----
+        # Pick the prediction-to-target assignment with the lowest total cost, so a correct set of
+        # angles in the wrong ORDER is not penalised. This is what makes the loss
+        # permutation-invariant, which any set predictor requires.
         # Use the loop-based assignment
         assignments = self.batch_hungarian_assignments(cost_matrix_angle)  # shape: (B, num_sources)
 
+        # ---- 3. Gather the matched errors and reduce ----
         batch_indices = torch.arange(B, device=doa_predictions.device).unsqueeze(1).expand(B, num_sources)
         row_indices = torch.arange(num_sources, device=doa_predictions.device).unsqueeze(0).expand(B, num_sources)
         optimal_angle_errors = diff_matrix_angle[batch_indices, row_indices, assignments]
@@ -199,6 +207,11 @@ class RMSPELoss(nn.Module):
             torch.Tensor: Tensor of shape (B, n) containing the assignment
                 (i.e. permutation column indices) for each batch element.
         """
+        # ---- Per-sample assignment ----
+        # Looped because scipy's linear_sum_assignment is a CPU routine with no batched form. The
+        # cost matrix is detached first: WHICH pairing is optimal is a discrete choice with no
+        # gradient -- the gradient flows through the gathered ERROR VALUES, not through the
+        # permutation itself.
         assignments = []
         B = cost_matrices.shape[0]
         for i in range(B):
@@ -221,6 +234,10 @@ class RMSPELoss(nn.Module):
         Returns:
             torch.Tensor: The error tensor broadcasted to shape (..., n, n) if pred and target are unsqueezed.
         """
+        # ---- Wrap the error into (-pi/2, pi/2] ----
+        # DoA error is PERIODIC: the array manifold cannot distinguish angles differing by pi in
+        # this parameterization, so a raw difference would report a huge error for two estimates
+        # that are physically identical. The modulo folds it back to the smallest equivalent error.
         diff = pred - target  # Broadcasting happens here.
         diff = (diff + torch.pi / 2) % torch.pi - torch.pi / 2
         return diff
