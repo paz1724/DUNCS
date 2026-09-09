@@ -202,6 +202,9 @@ class ADMMReconstructor(CovReconstructor):
         -------
         R_tilde : (B,|U|,|U|) complex tensor
         """
+        # ---- 1. Sample covariance of the PHYSICAL sparse array ----
+        # Only the |S| real sensors are measured, so this covariance is missing the lags the
+        # virtual co-array would have.
         Rx = sample_covariance(x)
         B, S, _ = Rx.shape
         U = self.U
@@ -210,18 +213,29 @@ class ADMMReconstructor(CovReconstructor):
         phi = self.phi.to(dev, dtype)
         phi_H = self.phi_H.to(dev, dtype)
 
+        # ---- 2. Lift measurements onto the virtual co-array grid ----
+        # Phi places each measured lag where it belongs in the |U| x |U| virtual covariance; the
+        # lags the sparse array never observes stay empty, and filling them is the job below.
         # ------------------------------------------------------------
-        # measured part  Φᴴ Rₓₓ Φ  →  (B,|U|,|U|)
+        # measured part  Phi^H Rxx Phi  ->  (B,|U|,|U|)
         # ------------------------------------------------------------
         meas = phi_H @ Rx @ phi
-        vec_meas = meas.reshape(B, -1)  # (B, |U|²)
+        vec_meas = meas.reshape(B, -1)  # (B, |U|^2)
 
+        # ---- 3. Precompute the R-update solve ----
+        # The data-fit operator is diagonal in this basis (P is the measured-lag mask), so its
+        # inverse is an elementwise reciprocal computed ONCE outside the loop instead of a matrix
+        # inverse per iteration.
         # ------------------------------------------------------------
-        # diagonal coefficients  (mask + 2ρI)⁻¹  (1-D then broadcast)
+        # diagonal coefficients  (mask + 2 rho I)^-1  (1-D then broadcast)
         # ------------------------------------------------------------
         inv_coeff = 1.0 / (self.P.to(dev, dtype) + 2 * self.rho)
         inv_coeff = inv_coeff.expand(B, -1)  # (B, |U|²)
 
+        # ---- 4. Splitting variables ----
+        # The answer must satisfy three things at once -- fit the data, be LOW RANK (M sources give
+        # a rank-M covariance) and be Hermitian-Toeplitz-PSD. No single projection does all three,
+        # so ADMM keeps a copy per property (R / S / T) and drives them together via the duals.
         # ------------------------------------------------------------
         # initial variables  (B,|U|,|U|)
         # ------------------------------------------------------------
@@ -237,24 +251,36 @@ class ADMMReconstructor(CovReconstructor):
         # ADMM iterations
         # ------------------------------------------------------------
 
+        # ---- 5. ADMM iterations ----
+        # Classical (non-unrolled) ADMM: fixed rho and mu, run to convergence rather than to a
+        # fixed layer count. This is the baseline DUNCS's unrolled version is measured against.
         for k in range(self.max_iter):
+            # 5a. R-update: data fit, closed form via the precomputed diagonal inverse.
             # R-update  (diagonal solve, batched)
             rhs = vec_meas + self.rho * (S - Udual + T - Vdual).reshape(B, -1)
             vec_R = inv_coeff * rhs
             R = vec_R.view(B, U, U)
 
+            # 5b. S-update: LOW RANK via singular-value thresholding -- the proximal operator of
+            # the nuclear norm, the convex stand-in for "rank = number of sources".
             # S-update  (SVT)
             Z = R + Udual
             S = svt(Z, self.mu / self.rho)
 
+            # 5c. T-update: PHYSICAL STRUCTURE. Hermitian, then Toeplitz (a ULA covariance depends
+            # only on sensor SEPARATION), then PSD. The Toeplitz averaging along each diagonal is
+            # what actually fills the co-array holes from the measured lags.
             # T-update  (Herm-Toeplitz-PSD)
             W = R + Vdual
             T = psd_proj(toeplitz_proj(hermitian_proj(W)))
 
+            # 5d. Dual ascent: accumulate the disagreement between copies, which is the pressure
+            # that eventually makes one matrix satisfy all three properties at once.
             # dual ascent
             Udual += R - S
             Vdual += R - T
 
+            # 5e. Stop when the copies agree (primal) and stop moving (dual).
             # convergence criteria (batch max)
             r_norm = torch.max(
                 (R - S).flatten(1).norm(dim=1),
@@ -275,6 +301,9 @@ class ADMMReconstructor(CovReconstructor):
             S_prev.copy_(S)
             T_prev.copy_(T)
 
+        # ---- 6. Return the STRUCTURED copy ----
+        # T, not R: only T is guaranteed Hermitian-Toeplitz-PSD, which the subspace method
+        # downstream needs to be meaningful.
         return T
 
 

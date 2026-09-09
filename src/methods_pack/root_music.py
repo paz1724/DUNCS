@@ -27,6 +27,7 @@ class RootMusic(SubspaceMethod):
             tuple: (angles_prediction [B, M], angles_prediction_all for all roots,
                 roots [B, 2N-2]).
         """
+        # ---- 1. Subspace split, optionally over-modelled ----
         if sources_num is None:
             M = self.system_model.params.M
         else:
@@ -36,11 +37,21 @@ class RootMusic(SubspaceMethod):
         # the roots. The strongest root (direct path) is then recovered by the power-pick selection below.
         M_sub = min(int(M) + getattr(self, "over_model", 0), cov.shape[-1] - 1)
         _, noise_subspace, _, self.eigen_regularization = self.subspace_separation(cov, number_of_sources=M_sub)
+        # ---- 2. Turn the MUSIC null condition into a POLYNOMIAL ----
+        # Ordinary MUSIC searches a grid for minima of a^H E_n E_n^H a. For a uniform array that
+        # expression is a polynomial in z = e^{j psi}, so its minima can be found EXACTLY by
+        # rooting instead of searching -- which is what makes Root-MUSIC gridless and why it has no
+        # grid-resolution floor. Summing the diagonals of E_n E_n^H collects the coefficients.
         poly_generator = torch.einsum("bnk, bkj -> bnj", noise_subspace, noise_subspace.conj().transpose(1, 2))
         diag_sum = self.sum_of_diag(poly_generator)
+
+        # ---- 3. Root the polynomial and map roots -> angles ----
+        # Roots come in reciprocal pairs; a true source sits ON the unit circle, so noise pushes its
+        # root just inside. The root ANGLE gives the DoA, the radius indicates confidence.
         roots = self.find_roots(diag_sum)
         angles_prediction_all = self.get_doa_from_roots(roots)
 
+        # ---- 4. Choose which M roots are the sources ----
         if getattr(self, "power_pick", False):
             # Multipath-robust selection: among inside-circle roots, pick the M with the highest
             # power a^H R a (the direct path = strongest), instead of the M closest to the unit circle

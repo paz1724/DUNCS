@@ -63,6 +63,8 @@ class DUNCS(ParentModel):
         Returns:
             torch.Tensor: Recovered virtual-array covariance T, shape [B, |U|, |U|].
         """
+        # ---- 1. Sample covariance of the PHYSICAL sparse array ----
+        # Only |S| sensors exist, so Rx has holes relative to the virtual ULA we want.
         Rx = sample_covariance(x)
         B, _, _ = Rx.shape
         U = self.U
@@ -71,12 +73,21 @@ class DUNCS(ParentModel):
         phi = self.phi.to(dev, dtype)
         phi_H = self.phi_H.to(dev, dtype)
 
+        # ---- 2. Lift the measurements onto the virtual (co-array) grid ----
+        # Phi maps virtual-array lags to the physical lags actually measured. Phi^H Rx Phi places
+        # every measured entry where it belongs in the |U| x |U| virtual covariance and leaves the
+        # unmeasured lags empty -- those holes are exactly what the ADMM below has to fill.
         # ------------------------------------------------------------
-        # measured part  Φᴴ Rₓₓ Φ  →  (B,|U|,|U|)
+        # measured part  Phi^H Rxx Phi  ->  (B,|U|,|U|)
         # ------------------------------------------------------------
         meas = phi_H @ Rx @ phi
         vec_meas = meas.reshape(B, -1)  # (B, |U|²)
 
+        # ---- 3. ADMM splitting variables ----
+        # The recovery must satisfy three properties at once -- data fit, LOW RANK (M sources give a
+        # rank-M covariance) and Hermitian-Toeplitz-PSD (physical structure) -- which no single
+        # projection provides. ADMM splits them into copies R / S / T, enforces one property on
+        # each, and drives them into agreement through the duals Udual / Vdual.
         # ------------------------------------------------------------
         # initial variables  (B,|U|,|U|)
         # ------------------------------------------------------------
@@ -92,7 +103,12 @@ class DUNCS(ParentModel):
 
         num_iter = self.test_iterations if phase == "test" else self.num_iter
 
+        # ---- 4. The unrolled iterations ----
+        # Each pass k has its own LEARNED rho, tau and mu instead of fixed ADMM constants -- that
+        # is the unfolding. The arithmetic is classical ADMM; only the step sizes are trained.
         for k in range(num_iter):
+            # 4a. R-update: data fit. Closed-form because the operator is diagonal in this basis,
+            # so the solve is an elementwise reciprocal rather than a matrix inverse.
             # R-update  (diagonal solve, batched)
             rhs = vec_meas + self.rho_r[k] * (S - Udual + T - Vdual).reshape(B, -1)
 
@@ -102,18 +118,30 @@ class DUNCS(ParentModel):
             vec_R = inv_coeff * rhs
             R = vec_R.view(B, U, U)
 
+            # 4b. S-update: LOW RANK, via singular-value thresholding. The proximal operator of
+            # the nuclear norm -- shrink every singular value by tau[k], which is the convex
+            # surrogate for "M sources means rank M".
             # S-update  (SVT)
             Z = R + Udual
             S = svt(Z, self.tau[k])
 
+            # 4c. T-update: PHYSICAL STRUCTURE. Project onto Hermitian, then Toeplitz (a ULA
+            # covariance depends only on sensor SEPARATION, not absolute position), then PSD.
+            # The Toeplitz step is what fills the co-array holes: it averages along each diagonal,
+            # so measured lags supply the values for the unmeasured ones.
             # T-update  (Herm-Toeplitz-PSD)
             W = R + Vdual
             T = psd_proj(toeplitz_proj(hermitian_proj(W)))
 
+            # 4d. Dual ascent: accumulate the disagreement between the copies, which is what
+            # eventually forces one matrix to satisfy all three properties simultaneously.
             # dual ascent
             Udual += self.mu_u[k] * (R - S)
             Vdual += self.mu_v[k] * (R - T)
 
+        # ---- 5. Return the STRUCTURED copy ----
+        # T, not R: it is the one guaranteed Hermitian-Toeplitz-PSD, which the subspace method
+        # downstream requires to be meaningful.
         return T
 
     def forward(self, x: torch.Tensor, num_sources: int, phase='train'):
@@ -128,7 +156,15 @@ class DUNCS(ParentModel):
             tuple: (doa_prediction, sources_estimation, eigen_regularization) from the
                 subspace method.
         """
+        # ---- 1. Unrolled ADMM recovers a covariance ----
+        # DUNCS splits the problem in two: an unrolled ADMM reconstructs a clean covariance from
+        # the sparse-array snapshots, then an ordinary subspace method reads DoAs off it. The
+        # network never estimates angles directly.
         R = self.get_learned_covariance(x, phase)
+
+        # ---- 2. Subspace readout ----
+        # Train and test use DIFFERENT readouts on purpose: training needs a differentiable one to
+        # backpropagate through, testing can use the sharper non-differentiable version.
         if phase == "train":
             doa_prediction, sources_estimation, eigen_regularization = self.subspace_method(R, num_sources)
         elif phase == "test":
