@@ -14,6 +14,7 @@ from src.system_model import SystemModel
 from src.signal_creation import Samples
 from src.models import ModelGenerator
 from src.utils import device
+from deck.doa_scenes import DATASIM_REFL_COHERENCE
 
 torch.set_grad_enabled(False)
 cfg = load_simulation_config("src/config/subspaceNet.yaml"); cfg.system_model.M = 2
@@ -32,10 +33,23 @@ def make_scene(angles, coherent, powers, datasim, rng):
     if powers is not None:
         clean = Am @ (base * np.sqrt(np.asarray(powers))[:, None]); base = np.linalg.lstsq(Am, clean, rcond=None)[0]
     if datasim:
+        # Echo waveform: decorrelated from its own direct path, at the SHARED coherence constant
+        # (deck/doa_scenes.py::DATASIM_REFL_COHERENCE). This generator is a SECOND copy of the
+        # multipath model -- it builds signals through the Samples pipeline at SNR U(25,30) rather
+        # than doa_scenes' own generation, so it cannot simply call the shared make_scene, but it
+        # MUST share the coherence. Reusing base[si] verbatim (=1) fused direct+echo into one
+        # rank-1 wavefront that genuinely arrives off the ground truth, so every method returned
+        # the same displaced answer -- the Sim->Sim column read 1.6-2.1 deg while every other
+        # column read 0.1-0.3 deg. Same artifact doa_scenes fixed; this copy was missed.
+        Tn = clean.shape[1]
         for si, a in enumerate(angles):
             for _ in range(int(rng.integers(1, 4))):
                 ref = float(np.clip(a + rng.uniform(-40, 40), -70, 70)); g = rng.uniform(0.2, 0.6) * np.exp(1j * rng.uniform(0, 2 * np.pi))
-                clean = clean + (g * steer(ref)[:, None]) * base[si:si + 1]
+                amp = np.sqrt(np.mean(np.abs(base[si]) ** 2))
+                indep = amp * (rng.standard_normal((1, Tn)) + 1j * rng.standard_normal((1, Tn))) / np.sqrt(2)
+                s_ref = (DATASIM_REFL_COHERENCE * base[si:si + 1]
+                         + np.sqrt(max(0.0, 1.0 - DATASIM_REFL_COHERENCE ** 2)) * indep)
+                clean = clean + (g * steer(ref)[:, None]) * s_ref
     snr = 10 ** (rng.uniform(25, 30) / 10)
     return clean + noise * np.sqrt(1.0 / snr)
 
