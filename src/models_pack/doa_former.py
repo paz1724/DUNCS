@@ -21,6 +21,27 @@ from src.metrics.criterions import set_criterions
 from src.utils import device
 
 
+
+def _unit_fro(z: torch.Tensor) -> torch.Tensor:
+    """Scales each sample to unit Frobenius norm, at any physical signal level.
+
+    Args:
+        z (torch.Tensor): Batch of matrices, shape [B, R, C].
+
+    Returns:
+        torch.Tensor: Same shape, each sample divided by its own Frobenius norm.
+    """
+    # Guarding the division with an ABSOLUTE epsilon (the previous `+ 1e-6`) silently destroys the
+    # normalization on data that is not already O(1). The recorded instances carry physical levels:
+    # ||R||_F spans 5e-12..5e-4, so a 1e-6 guard DOMINATED the denominator on 88% of them and left
+    # the covariance tokens at ~1e-3 of unit scale (down to 5e-6) -- near-zero tokens the network
+    # never saw in training, while the scale-invariant classical methods read the SAME instances at
+    # ~1.2 deg. Dividing by the norm itself, substituting 1 only for an exactly-zero input, is
+    # unit-Frobenius at every scale and keeps the model genuinely scale-invariant.
+    nrm = torch.linalg.norm(z, dim=(1, 2), keepdim=True)
+    return z / torch.where(nrm > 0, nrm, torch.ones_like(nrm))
+
+
 class DoAFormer(ParentModel):
     """Transformer encoder/decoder with learnable source queries + a count head."""
 
@@ -122,14 +143,14 @@ class DoAFormer(ParentModel):
         if self.input_mode in ("cov", "both"):
             Rx = torch.einsum("bnt,bmt->bnm", x, x.conj()) / x.shape[-1]   # [B, N, N]
             # Per-sample unit-Frobenius normalization keeps the transformer stable.
-            Rx = Rx / (torch.linalg.norm(Rx, dim=(1, 2), keepdim=True) + 1e-6)
+            Rx = _unit_fro(Rx)
             toks.append(torch.cat((Rx.real, Rx.imag), dim=2))             # [B, N, 2N]
         # ---- 2. Snapshot tokens: T tokens, one per time sample ----
         if self.input_mode in ("snapshots", "both"):
             # Raw snapshots as T tokens of [Re, Im] over the N sensors — preserve the
             # per-snapshot phase that distinguishes front from back-lobe on a measured array.
             xs = x.transpose(1, 2)                                        # [B, T, N]
-            xs = xs / (torch.linalg.norm(xs, dim=(1, 2), keepdim=True) + 1e-6)
+            xs = _unit_fro(xs)
             toks.append(torch.cat((xs.real, xs.imag), dim=2))            # [B, T, 2N]
         return torch.cat(toks, dim=1)                                     # [B, n_tok, 2N]
 
