@@ -4720,6 +4720,30 @@ def add_daf_journey_slide():
         ])
 
 
+def add_real_scale_bug_slide():
+    S = THEMES["SubspaceNet"][1]
+    return _journey_slide(
+        "Real-propagation eval — the sim-to-real gap that wasn't", "SubspaceNet",
+        "Scoring every method on the RAW DataSim recordings (400 single-source instances, |az| ≤ 65°, SNR 5.6–84.6 dB, median 28.9) — no synthetic stand-in. Each step: symptom → reasoning → change → measured result.",
+        [
+            ("① Symptom — the learned methods collapse on real data",
+             "Scored on the recordings directly, DoAFormer read 32.71° RMS (median 4.32°, p90 71.65°) synth-trained — and 52.02° (median 31.19°) after RETRAINING on real recordings, i.e. training on the target data made it WORSE. On the SAME 400 instances every classical method sat at 1.17–1.53°: MFOCUSS 1.17, ML/MUSIC 1.18, SubspaceNet-MUSIC 1.45, SPICE 1.53. The obvious reading — a sim-to-real gap our synthetic scenes cannot close — is what motivated the whole real-data training track (retrain_150.py --real).",
+             COL_WARN, 0.98),
+            ("② The contradiction that made it a bug, not a limit",
+             "A gap in TRAINING DATA cannot explain a model that gets worse when trained on the target data itself. And the split was too clean to be physical: every method that survived is SCALE-INVARIANT (beamscan, MUSIC, MFOCUSS, SPICE all normalize the covariance scale away), and every method that failed carries a learned, scale-SENSITIVE front end. The recordings span physical signal levels — retrain_150 already had to normalize them (~1e-12..1e-5) to train at all. That points at input scaling, not at propagation structure.",
+             S, 1.02),
+            ("③ Root cause — an ABSOLUTE epsilon inside a scale-free normalization",
+             "DoAFormer normalizes each sample to unit Frobenius norm, guarded as Rx / (‖Rx‖_F + 1e-6). The guard is absolute, so it is only negligible for data that is already O(1) — which every synthetic scene is, and no recording is. Measured on the recordings: ‖R‖_F spans 4.7e-12 … 5.3e-4, so on 88 % of instances the 1e-6 DOMINATED the denominator and the covariance tokens arrived at ~1e-3 of unit scale (worst case 4.7e-6). The transformer was reading near-zero tokens it never met in training. The snapshot tokens (‖x‖_F ~1e-4) cleared the guard — which is exactly why the failure was severe but not total, and why it read as a model weakness rather than as a broken input.",
+             COL_WARN, 1.18),
+            ("④ Fix — divide by the norm itself, and regression-guard it",
+             "_unit_fro(): divide by ‖·‖_F, substituting 1 only for an exactly-zero input — unit-Frobenius at EVERY scale, with no constant left to tune (a smaller epsilon would only move the failure threshold). Verified before re-running: on O(1) synthetic data old and new agree to 5.4e-7 (float32 rounding), so no existing synthetic number can move; re-scaling one scene across 1e0…1e-12 leaves the new tokens within 9e-8 of the unit-norm reference while the old path drifts to 0.45; all-zero input stays finite; the gradient stays finite at 1e-10 scale.",
+             S, 1.06),
+            ("⑤ Result — no sim-to-real gap, and the real-data track was never the lever",
+             "DoAFormer synth-trained 32.71 → 1.18° RMS (median 0.65°, p90 71.65 → 1.99°); real-trained 52.02 → 1.17°. Both now TIE the best classical method (MFOCUSS 1.17, ML/MUSIC 1.18) and the gross errors vanish. Every classical row is unchanged to the last digit, confirming the change touched only the learned path. The conclusion INVERTS the premise of step ①: there is no measurable sim-to-real gap on this dataset — synth-trained 1.18 vs real-trained 1.17 is noise. The gap was the measurement, not the model and not the data.",
+             COL_OK, 1.16),
+        ])
+
+
 def add_m3_slide():
     sl = add_blank("Beyond two sources — M=3 evaluation (synthetic + real triples)", theme="Results",
                    subtitle="Trained methods (MUSIC, DoAFormer) retrained over M ∈ {1,2,3}; classical/readout methods evaluate M=3 natively. Real triples = same-frequency triplets of measured vectors, ≥15° pairwise separation (1500 sampled). Cells: RMS°/MD%.")
@@ -5335,6 +5359,7 @@ def main():
         ("DU-MFOCUSS journey I — structural fixes", add_du_journey1_slide),
         ("DU-MFOCUSS journey II — real-data adaptation", add_du_journey2_slide),
         ("DoAFormer journey — sim-to-real fine-tune", add_daf_journey_slide),
+        ("Real-data eval — the sim-to-real gap that wasn't", add_real_scale_bug_slide),
         ("Beyond two sources — M=3", add_m3_slide),
         ("Real-data GT bias — found and corrected", add_bias_correction_slide),
         ("Jitter ablation — where jitter belongs", add_jitter_ablation_slide),
@@ -5475,6 +5500,7 @@ def main():
         ("DU-MFOCUSS journey I — structural fixes", add_du_journey1_slide),
         ("DU-MFOCUSS journey II — real-data adaptation", add_du_journey2_slide),
         ("DoAFormer journey — sim-to-real fine-tune", add_daf_journey_slide),
+        ("Real-data eval — the sim-to-real gap that wasn't", add_real_scale_bug_slide),
         ("Beyond two sources — M=3", add_m3_slide),
         ("Real-data GT bias — found and corrected", add_bias_correction_slide),
         ("Jitter ablation — where jitter belongs", add_jitter_ablation_slide),
@@ -5538,6 +5564,7 @@ def main():
             ("Multipath bug hunt — journey", add_mp_bughunt_slide),
             ("Two coherences — MUSIC vs MFOCUSS", add_two_coherences_slide),
             ("Three bugs found & fixed", add_three_bugs_slide),
+            ("Real-data eval — the sim-to-real gap that wasn't", add_real_scale_bug_slide),
             ("CRB calculation — Synth column", add_crb_synth_slide),
             ("CRB calculation — Sim column", add_crb_sim_slide),
             ("Model tradeoffs — which method, when", add_tradeoffs_rebuilt_slide),
