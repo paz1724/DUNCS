@@ -52,3 +52,14 @@ data/simulations/
 *.tar
 *.tar.gz
 *.tgz
+
+# Generated GUI artifacts. Both are BUILT from data/simulations/results by
+# deck/export_gui_data.py and deck/gui/build_gui.py, and change on every benchmark run --
+# about 1.8 MB of churn per rebuild if tracked. The editable source doa_verify.html stays
+# tracked; these two do not. Rebuild them with deck/gui/rebuild_gui.cmd.
+deck/gui/doa_verify_data.json
+deck/gui/doa_verify_inline.html
+
+# Model checkpoints and trace archives, wherever they land
+*.pt
+*.npz
