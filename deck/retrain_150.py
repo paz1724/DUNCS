@@ -45,7 +45,17 @@ SMOKE = "--smoke" in sys.argv
 # +/-42 deg, so for a 25-40 deg pair it spans BOTH sources and the training gradient is never
 # forced to separate them. --cell runs the controlled A/B against the 0.3 checkpoint.
 CELL = float(sys.argv[sys.argv.index("--cell") + 1]) if "--cell" in sys.argv else None
+# DU was measured at ~1.7 HOURS per epoch: its fine-grid validation pass runs 1000 scenes in
+# eval_chunk=32 slices EVERY epoch, which costs far more than the training pass itself.
+# 80 epochs would have taken ~6 days. VAL_EVERY alone fixes that: it cuts DU from ~1.7 h to
+# ~4 min per epoch, so the full 80-epoch schedule costs hours, not days. Shortening DU to 25
+# epochs was tried on top of that and REVERTED -- it is undertrained there, and every pair
+# cell got worse on Sim->Sim: reuse-15 MD 29 -> 40%, multipath-15 55 -> 81%, multipath-25
+# 55 -> 85%, while single-source improved only because the channel calibration helped it.
+# Cost of VAL_EVERY: the best-checkpoint can only be taken on a validated epoch, so the
+# saved model may miss a better one in between.
 EPOCHS = 3 if SMOKE else {"du": 80, "music": 60, "doaformer": 100}[WHICH]
+VAL_EVERY = 1 if SMOKE else 5          # run the validation pass on 1 epoch in VAL_EVERY
 N_TR, N_VA = (400, 200) if SMOKE else (5000, 1000)
 BATCH = 128
 SINGLE_FRAC, COH_FRAC = 0.34, 0.33          # 34% single / 33% independent pair / 33% coherent pair
@@ -188,10 +198,13 @@ def run(data, train):
 
 best, bsd = 1e9, None
 for ep in range(EPOCHS):
-    tl = run(TR, True); sch.step(); vl = run(VA, False)
-    if vl < best: best, bsd = vl, copy.deepcopy(model.state_dict())
-    if ep % 5 == 0 or ep == EPOCHS - 1:
+    tl = run(TR, True); sch.step()
+    if ep % VAL_EVERY == 0 or ep == EPOCHS - 1:          # always validate the FIRST and LAST epoch
+        vl = run(VA, False)
+        if vl < best: best, bsd = vl, copy.deepcopy(model.state_dict())
         print(f"ep{ep+1:3d} train={tl:.4f} val={vl:.4f} (best {best:.4f})", flush=True)
+    else:
+        print(f"ep{ep+1:3d} train={tl:.4f}", flush=True)
 torch.save(bsd, OUT)
 print(f"SAVED {OUT} best-val={best:.4f}", flush=True)
 print("DONE", flush=True)

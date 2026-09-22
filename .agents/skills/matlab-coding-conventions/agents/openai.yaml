@@ -1,0 +1,4 @@
+interface:
+  display_name: "MATLAB Coding Conventions"
+  short_description: "MATLAB orchestration, local helpers, and task conventions"
+  default_prompt: "Use $matlab-coding-conventions to implement this MATLAB change in the target repository's style."

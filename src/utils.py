@@ -290,6 +290,12 @@ def gram_diagonal_overload(Kx: torch.Tensor, eps: float, batch_size: int):
     if not isinstance(Kx, torch.Tensor):
         Kx = torch.tensor(Kx)
 
+    # ---- K^H K + eps*I ----
+    # A network emits an arbitrary complex matrix, which is neither Hermitian nor PSD -- and a
+    # subspace method applied to one that is not would be meaningless (complex or negative
+    # "powers"). The Gram product guarantees BOTH by construction for any K whatsoever, which is
+    # what lets a classical eigendecomposition sit downstream of a CNN and still be trained through.
+    # eps*I then keeps that eigendecomposition differentiable when eigenvalues cluster.
     Kx_garm = torch.matmul(torch.transpose(Kx.conj(), 1, 2), Kx)
     eps_addition = (eps * torch.diag(torch.ones(Kx_garm.shape[-1]))).to(device)
     Kx_Out = Kx_garm + eps_addition
@@ -335,6 +341,11 @@ def _spatial_smoothing_covariance(sampels: torch.Tensor):
         covariance_mat (np.ndarray): Covariance matrix.
     """
 
+    # ---- Average covariances over overlapping sub-arrays ----
+    # The classical fix for COHERENT sources. Two fully correlated sources make the source
+    # covariance rank-1, so MUSIC/ESPRIT cannot separate them. Each shifted sub-array sees the pair
+    # with a different relative phase, so averaging their covariances restores rank -- at the cost
+    # of aperture, since each sub-array is smaller than the full array.
     X = sampels.squeeze()
     N = X.shape[0]
     # Define the sub-arrays size
@@ -514,6 +525,10 @@ def build_phi(array) -> Tensor:
         Tensor: Selection matrix Phi, shape [|S|, |U|] where |U| = max(array)+1,
             with 1.0 entries marking occupied positions.
     """
+    # ---- One row per PHYSICAL sensor, one column per VIRTUAL ULA position ----
+    # Phi is how a sparse geometry is expressed as a filled ULA with holes: it selects the |S|
+    # positions that actually have a sensor out of the |U| the virtual array would have. Every
+    # sparse-array routine here (co-array lifting, the CRB, the ADMM data-fit term) is built on it.
     max_element = array.max()
     s = torch.as_tensor(array, dtype=torch.int64, device=device)
     v = torch.arange(max_element + 1, dtype=torch.int64, device=device)   # The presumed ULA
@@ -534,6 +549,8 @@ def hermitian_proj(X: Tensor) -> Tensor:
     Returns:
         Tensor: Hermitian matrix 0.5*(X + X^H), same shape as X.
     """
+    # Nearest Hermitian matrix in Frobenius norm. A covariance MUST satisfy R = R^H; numerical
+    # drift and the ADMM updates both break that, so this restores it exactly.
     return 0.5 * (X + X.conj().transpose(-2, -1))
 
 
@@ -547,6 +564,11 @@ def toeplitz_proj(H: Tensor) -> Tensor:
         Tensor: Toeplitz matrices, shape [B, L, L], where each diagonal is
             replaced by its mean value.
     """
+    # ---- Average along every diagonal ----
+    # A ULA covariance depends only on sensor SEPARATION, not absolute position, so it is constant
+    # along each diagonal. Averaging is the nearest Toeplitz matrix in Frobenius norm -- and in the
+    # sparse-array setting it is also the step that FILLS THE HOLES: a diagonal containing even one
+    # measured lag propagates that value to every unmeasured entry on the same diagonal.
     B, L, _ = H.shape
     T = H.clone()
     for d in range(-L + 1, L):
@@ -567,6 +589,11 @@ def psd_proj(T: Tensor) -> Tensor:
     Returns:
         Tensor: Nearest PSD matrices (in Frobenius norm), shape [B, N, N].
     """
+    # ---- Clip negative eigenvalues to zero ----
+    # The nearest PSD matrix in Frobenius norm. Needed because a covariance cannot have negative
+    # eigenvalues, yet the preceding Toeplitz averaging can easily produce them.
+    # The phase normalization makes the eigenvectors deterministic: eigh fixes an eigenvector only
+    # up to a unit-modulus scalar, so without it the reconstruction is unstable run to run.
     lam, U = torch.linalg.eigh(T)
     phase = U[..., 0, :].angle()
     U = U * torch.exp(-1j * phase)[..., None, :]
@@ -587,6 +614,10 @@ def svt(Z: Tensor, tau) -> Tensor:
     Returns:
         Tensor: Thresholded (low-rank-shrunk) matrices, shape [B, M, N].
     """
+    # ---- Soft-threshold the singular values ----
+    # The proximal operator of the nuclear norm, and the low-rank half of the ADMM split. Shrinking
+    # (rather than truncating) is what makes it the prox of a CONVEX surrogate for rank: small
+    # singular values are driven exactly to zero, so rank drops without ever fixing it in advance.
     U, s, Vh = torch.linalg.svd(Z)
     s_shrink = torch.clamp(s - tau, min=0.0)
     return (U * s_shrink.unsqueeze(-2)) @ Vh
@@ -604,6 +635,11 @@ def diag_loading(mat: Tensor, training=False) -> Tensor:
     Returns:
         Tensor: Loaded Hermitian matrices, shape [B, N, N].
     """
+    # ---- Symmetrize, then load the diagonal ----
+    # eigh on a nearly-singular matrix produces eigenvectors whose GRADIENTS blow up as two
+    # eigenvalues approach each other, which is fatal when the decomposition sits inside a training
+    # graph. The eps*I separates them; the training-only dither breaks exact degeneracies that a
+    # constant load cannot.
     mat = hermitian_proj(mat)
     B, N, _ = mat.shape
     I = torch.eye(N, device=mat.device, dtype=mat.dtype).expand(B, N, N)

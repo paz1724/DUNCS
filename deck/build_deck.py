@@ -1346,30 +1346,30 @@ def add_du_lever_slide():
 
 
 def add_music_window_slide():
-    """Is SubspaceNet-MUSIC's gentle loss a bug? Controlled soft-argmax-window A/B — verdict: no."""
-    sl = add_blank("SubspaceNet-MUSIC — is the gentle loss a bug? (controlled A/B)", theme="Results",
-                   subtitle="The MUSIC curve descends only 0.06→0.041 — reported as ‘not decreasing enough’, so treated as a bug hunt. A recipe-matched A/B on the soft-argmax readout window settles it at the source.")
+    """The soft-argmax window A/B, and the later evidence that REVERSED its verdict."""
+    sl = add_blank("SubspaceNet-MUSIC — the readout window: an A/B, and its reversal", theme="Results",
+                   subtitle="First read as ‘the loss curve is too gentle’ and closed as no-bug by a controlled A/B. A later measurement reopened it and reversed the verdict — the window WAS the bug, on coherent pairs.")
     def _r(a, b, c, d):
         return f"  {a:<25}{b:<11}{c:<12}{d}"
     tbl = "\n".join([
         _r("soft-argmax window", "best-val", "reuse", "multipath"),
         "  " + "─" * 60,
-        _r("WIDE  ±42°  (current)", "0.0468", "1.37 / 2", "2.73 / 8   ← lower loss + better MD"),
-        _r("tight ±3.6° (“fix”)", "0.0552", "1.32 / 3", "2.61 / 11"),
+        _r("WIDE  ±42°  (0.3)", "0.0468", "1.37 / 2", "2.73 / 8   ← looked better — PRE-FIX pipeline"),
+        _r("tight ±3.6° (0.025)", "0.0552", "1.32 / 3", "2.61 / 11"),
         _r("", "", "RMS° / MD%", ""),
     ])
-    _add_card(sl, 1.55, 1.35, 10.2, 1.72, fill=COL_CARD_BG2)
-    _add_text(sl, 1.75, 1.44, 9.8, 0.26, "Controlled A/B — identical recipe, both windows, scored on the SAME eval cells (isolates the window from the training recipe)",
-              size=9.5, bold=True, color=THEMES["Final"][1])
-    _add_text(sl, 1.75, 1.78, 9.9, 1.2, tbl, size=10.5, color=COL_TEXT, name="Consolas", wrap=False)
-    _add_card(sl, 0.35, 3.34, 12.65, 3.9, fill=COL_CARD_BG2)
-    _add_text(sl, 0.5, 3.4, 12.3, 0.26, "The suspect, the test, and the verdict", size=10.5, bold=True, color=THEMES["Final"][1])
-    bullets(sl, 0.55, 3.7, 12.3, 3.4, [
-        "SUSPECT: the differentiable readout window is cell_size = 0.3·grid ≈ ±42°, and its only shrinker (adjust_diff_method_temperature) is DEAD CODE — never called by the trainer. A micro-measurement made it look guilty: at ±42° a single source’s window swallows its neighbor, giving 26° pair readout. So I tightened it to ±3.6° and retrained.",
-        "TEST: retrain MUSIC with the IDENTICAL recipe at ±42° vs ±3.6° and score BOTH on the same eval cells — the only way to separate the window from the training recipe (my first comparison had confounded the two).",
-        "RESULT: the WIDE window (current) WINS — lower validation loss (0.0468 vs 0.0552) AND better detection. A soft-argmax exists to supply GRADIENT, not accuracy: the wide window always contains the true peak, so it trains the CNN better even though its isolated readout looks blurrier. The tight ‘fix’ would have RAISED the very loss it was meant to cure.",
-        "VERDICT — no bug. The flat TRAIN loss (~0.13) is the soft-argmax window’s structural floor (a soft readout cannot sharpen past it, and we need it soft for the gradient); the VALIDATION loss bottoms at epoch 45 (0.041) then mildly overfits, harvested by the best-checkpoint. MUSIC simply starts near its floor — the CNN covariance is already good at init — so a gentle curve is the honest, correct behavior.",
-        "LESSON: a micro-measurement (readout accuracy) misled; only the recipe-matched end-to-end A/B is ground truth. The premature ‘fix’ was reverted before it touched the tables (guard-persist caught it); cell_size_frac was kept as a parameter at its validated default 0.3 (no-magic-numbers). Residual headroom vs DoAFormer (0.041 vs 0.027) is architectural — the fixed subspace readout — not a bug.",
+    _add_card(sl, 1.55, 1.30, 10.2, 1.62, fill=COL_CARD_BG2)
+    _add_text(sl, 1.75, 1.37, 9.8, 0.26, "The original A/B — identical recipe, both windows, same eval cells (SUPERSEDED, kept for the method)",
+              size=9.5, bold=True, color=COL_WARN)
+    _add_text(sl, 1.75, 1.68, 9.9, 1.2, tbl, size=10.5, color=COL_TEXT, name="Consolas", wrap=False)
+    _add_card(sl, 0.35, 3.02, 12.65, 4.32, fill=COL_CARD_BG2)
+    _add_text(sl, 0.5, 3.08, 12.3, 0.26, "The reversal — what the A/B could not see", size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.55, 3.38, 12.3, 3.86, [
+        "THE TRIGGER: SubspaceNet-MUSIC scored 74 % MD on COHERENT pairs while classical MUSIC on the RAW sample covariance scored 5 %. A learned model losing to its own classical special-case is a bug, not a limit — that is what reopened a question the A/B had closed.",
+        "ROOT CAUSE — a train/eval readout MISMATCH: training reads the spectrum with a soft-argmax over cell_size, eval takes HARD peaks. At cell_size_frac = 0.3 the window is ±42° — WIDER than any pair being scored — so for a 25–40° pair it covered BOTH sources and the gradient was never forced to separate them. The CNN learned a covariance whose soft AVERAGE is right while its MUSIC NULLS are not, and the hard-peak eval reads that as garbage.",
+        "IT EXPLAINS THE WHOLE PATTERN: single sources fine (nothing to separate), independent pairs fine (sharp dominant lobes), coherent pairs catastrophic (a merged lobe, where the nulls are all that distinguish the sources). Isolated by holding the readout COMPLETELY fixed and swapping only the covariance into the same MUSIC: multipath-25 read 2.73°/4 % on R̂ vs 4.87°/65 % on the CNN’s. Its 2nd eigenvalue is HIGHER than raw (−14.5 vs −17.8 dB), so this is not rank collapse — the subspace is steered wrong.",
+        "RETRAINED at cell_size_frac = 0.025 (±3.5°), 200 scenes/scenario — synth multipath-15 MD 73.2 % → 0.5 %, multipath-25 63.2 % → 0.2 %; datasim multipath-15 70.0 % → 8.5 %, multipath-25 72.2 % → 5.8 %; reuse-15 7.0 % → 1.2 %; single and reuse-25 unchanged. It now beats classical MUSIC on EVERY scenario in both domains — and leads the corrected coherent-pair tables at 1.5°/1 % and 1.4°/0 %.",
+        "LESSON — a controlled A/B is only ground truth on a CORRECT pipeline. The original comparison was honest and well-run, but it ran BEFORE the covariance and readout bugs were fixed, so both arms were broken and the wide window merely lost less. What reopened it was not a better A/B: it was the invariant that a learned model must not lose to the classical method it generalizes.",
     ], size=8.4, gap=0.02)
     return sl
 
@@ -3279,15 +3279,15 @@ def add_perf_synth_slide():
 def add_perf_real_sy_slide():
     return _scenario_table_slide(
         "Performance — REAL recordings (synthetic-trained)",
-        "86 measured ULA3 vectors @150 MHz, re-noised at SNR 30–45 dB (recordings are ~60 dB — cells are calibration-limited). GT bias correction (−1.30°, train-split-estimated) applied to all predictions. Cells: dfErr RMS° / MD%.",
+        "86 measured ULA3 vectors @150 MHz, re-noised at SNR 30–45 dB. Recordings are ~60 dB, so cells are calibration-limited. GT bias correction (−1.30°, train-split-estimated) applied to all predictions. Cells: dfErr RMS° / MD%.",
         [("mit_single", "Single"), ("mit_reuse", "Reuse ≥15°"), ("mit_reuse25", "Reuse ≥25°"), ("mit_reuse3", "3 sources (triples)")],
-        "DoAFormer-FT / DU-MFOCUSS-cal: real-data-adapted (angle-disjoint 70/30), evaluated on HELD-OUT angles only. 3-source column = same-frequency measured triples ≥15° pairwise. Plain DoAFormer's real gap is NONLINEAR: eval-time linear input calibrations (unit-mag C⁻¹ and amplitude Ca⁻¹) both REFUTED — only the -FT fine-tune closes it. Median errors are far below RMS (MFOCUSS median ≈0.1° = MATLAB reference).")
+        "DoAFormer-FT / DU-MFOCUSS-cal: real-data-adapted (angle-disjoint 70/30), evaluated on HELD-OUT angles only. 3-source column = same-frequency measured triples ≥15° pairwise. Plain DoAFormer's real gap is NONLINEAR: Eval-time linear input calibrations were both REFUTED. That covers unit-mag C⁻¹ and amplitude Ca⁻¹. Only the -FT fine-tune closes it. Median errors are far below RMS (MFOCUSS median ≈0.1° = MATLAB reference).")
 
 
 def add_perf_real_ds_slide():
     return _scenario_table_slide(
         "Performance — REAL recordings (DataSim-trained)",
-        "Same 86 measured vectors and scene pipeline; the learned models are trained on the @150 MHz DataSim (jittered singles + balanced sim pairs for DoAFormer). Cells: dfErr RMS° / MD%.",
+        "Same 86 measured vectors and scene pipeline; the learned models are trained on the @150 MHz DataSim. That is jittered singles plus balanced sim pairs for DoAFormer. Cells: dfErr RMS° / MD%.",
         [("mit150ds", "Single"), ("mit150ds_reuse", "Reuse ≥15°"), ("mit150ds_reuse25", "Reuse ≥25°")],
         "Classical rows (MFOCUSS/ESPRIT/RootMUSIC-raw) are untrained — their Real-Sy and Real-DS cells differ only by evaluation noise draws. Plain DoAFormer here documents the no-real-data ablation; its -FT row is the adapted result.")
 
@@ -3295,9 +3295,9 @@ def add_perf_real_ds_slide():
 def add_perf_sim_slide():
     return _scenario_table_slide(
         "Performance — DATA-FROM-SIM",
-        "Dense multipath simulation @150 MHz (corrected-azimuth GT, recoverable subset). Reuse pairs are POWER-BALANCED (unit-RMS superposition — raw sample powers span ~50 dB, which measured power ratios, not resolution). Cells: dfErr RMS° / MD%.",
+        "Dense multipath simulation @150 MHz (corrected-azimuth GT, recoverable subset). Reuse pairs are POWER-BALANCED by unit-RMS superposition. Raw sample powers span ~50 dB. Unbalanced pairs would measure power ratios, not resolution. Cells: dfErr RMS° / MD%.",
         [("datasim", "Single"), ("datasim_reuse", "Reuse ≥15°"), ("datasim_reuse25", "Reuse ≥25°")],
-        "CRB row = per-scene PLUG-IN bound (SNR & source powers estimated from each scene: steering-subspace projection at the GT angles; unmodeled multipath counted as noise -> conservative). Each sample carries heavy multipath; pairs superpose two multipath channels. MVDR reuse = Capon SELF-CANCELLATION under correlated multipath — FOUR refuted levers (loading flat, FBA worse, SIC worse, eigenspace/ESB much worse); MUSIC on the SAME learned covariance resolves (9/6%) → use the MUSIC readout for pairs.")
+        "CRB row = per-scene PLUG-IN bound (SNR & source powers estimated from each scene: steering-subspace projection at the GT angles; unmodeled multipath counted as noise -> conservative). Each sample carries heavy multipath; pairs superpose two multipath channels. MVDR reuse is Capon SELF-CANCELLATION under correlated multipath. FOUR levers were refuted: loading flat, FBA worse, SIC worse, eigenspace/ESB much worse; MUSIC on the SAME learned covariance resolves (9/6%) → use the MUSIC readout for pairs.")
 
 
 def add_full_perf_table_slide():
@@ -3588,34 +3588,46 @@ def add_doa_all_reuse_slide():
 
 
 _E150 = Path(r"C:/GitHub/DUNCS/data/simulations/results/eval_150.json")
-_E150_METHODS = ["ML (beamscan)", "ML-2D (joint)", "ML-AP (alt. proj.)", "MUSIC (classical)",
+# ML-AP and DU-MFOCUSS-guarded are DROPPED from the table: measured over 120 single-source
+# scenes they are duplicate rows, not independent methods. ML-AP returns the IDENTICAL
+# estimate to ML (beamscan) and ML-2D on 100% of scenes -- at M=1 the deterministic-ML
+# criterion over one angle IS the beamscan, so alternating projection has nothing to
+# alternate. DU-MFOCUSS-guarded matches DU-MFOCUSS on 100% of single-source and 84% of
+# reuse-15 scenes (the classical-floor guard rarely fires). Both remain in eval_150.json.
+_E150_METHODS = ["ML (beamscan)", "ML-2D (joint)", "MUSIC (classical)",
                  "MFOCUSS", "SPICE (IAA)", "SubspaceNet-MUSIC", "DoAFormer",
-                 "DU-MFOCUSS", "DU-MFOCUSS-guarded"]
+                 "DU-MFOCUSS"]
+# The unrefined "own readout" twins are no longer rendered. They existed to show how much of
+# SPICE's and DoAFormer's accuracy came from the local-ML refinement both bolt on at the end.
+# That question is answered and lives on the "why the cells looked identical" slide; a second
+# grey row per method cost more confusion than it bought. eval_150.py still scores them and
+# eval_150_traces.npz still holds them, so the comparison can be reproduced at any time.
+_E150_OWN = {}
 _E150_READ = {
     "single": [
-        "Five methods reach the CRLB (0.4° vs a 0.36° bound): ML, classical MUSIC, MFOCUSS, SubspaceNet-MUSIC and DU-MFOCUSS-guarded. That agreement with theory is the strongest single validation that the corrected pipeline is sound.",
-        "SPICE (2.7°) is the outlier on clean data — IAA-style covariance fitting is poorly conditioned at only T = 8 snapshots. DoAFormer (1.2°) is limited by regression-head variance: a gridless head has no sub-grid peak refinement.",
-        "On the DataSim columns everything converges to ~3.2–3.7°: with a ~50° Rayleigh limit at 150 MHz, a specular reflection inside the beam genuinely moves the composite wavefront, so this is physics rather than estimator error.",
+        'Widening SNR to U(6,30)\u202fdB broke the tie. The methods now separate. Classical MUSIC leads clean synthetic at 1.82°/1\u202f%, then SubspaceNet-MUSIC 1.86° and DoAFormer 1.97°. ML, ML-2D, MFOCUSS and DU-MFOCUSS sit together at 2.02–2.03°. The bound is 1.78°.',
+        'SPICE is the outlier at 2.39°/10\u202f%. It is the only method that misses a lone source at all. Every other row holds 0–1\u202f% MD. Measured separately in the 6–12\u202fdB band, SPICE ran 16.08° against 2.2° for the rest. Its structured covariance fit collapses at low SNR.',
+        "At the old 25–30\u202fdB range every cell read the same value. Only 21–28\u202f% of each method's error was its own back then. The rest was the shared noise realization. Cross-method spread is 0.07° at 24–30\u202fdB and 17.4° at 6–12\u202fdB. Low SNR is where estimators actually differ.",
     ],
     "reuse15": [
-        "Two INDEPENDENT sources 15° apart = 0.3× the Rayleigh limit at 150 MHz — deeply sub-resolution, so no method approaches the 1.02° bound.",
-        "ML (1.5°/0 %), classical MUSIC (1.7°/4 %) and SubspaceNet-MUSIC (2.0°/10 %) lead: with independent sources the covariance is full-rank and subspace methods work as designed.",
-        "DU-MFOCUSS ≈ MFOCUSS here (3.7/14 vs 3.9/16) — on equal footing the sparse pair is indistinguishable on independent sources.",
+        'Two independent sources ≥15° apart, now reaching down to 6\u202fdB. SubspaceNet-MUSIC leads Synth→Synth at 3.24°/20\u202f%. ML-2D and classical MUSIC both read 3.48°. DoAFormer is the best on detection at 4.06°/5\u202f%.',
+        'ML beamscan fails outright at 6.15°/73\u202f% MD. A 1-D scan cannot place two peaks inside one ≈50° beam. The same likelihood searched jointly fixes it: ML-2D reads 3.48°/12\u202f%.',
+        'The sparse methods struggle at this SNR. MFOCUSS 5.23°/42\u202f%, SPICE 5.08°/41\u202f%, DU-MFOCUSS 5.36°/45\u202f%. All three sit at or above the 5.80° bound. None is resolving the pair reliably.',
     ],
     "reuse25": [
-        "Widening 15° → 25° drops every miss-rate (MFOCUSS 16→11 %, SubspaceNet-MUSIC 10→1 %) — the clean aperture signature: wider pairs are less sub-Rayleigh.",
-        "Classical MUSIC and SubspaceNet-MUSIC both reach 1.1°, close to the 0.78° bound.",
-        "DU-MFOCUSS-guarded (3.5/8) edges MFOCUSS (3.6/11) on miss-rate.",
+        'Widening the pair to ≥25° helps every method. Classical MUSIC 2.95°/18\u202f%, ML-2D 3.13°/8\u202f%, SubspaceNet-MUSIC 3.16°/14\u202f%. Miss-rates fall against the 15° case throughout, which is the aperture signature.',
+        "DoAFormer holds the best detection at 4.12°/7\u202f%. Its RMS is higher than MUSIC's, but it misses far fewer sources. Read RMS and MD together here.",
+        'ML beamscan still fails at 5.54°/74\u202f%. Even a 25–40° pair sits inside a single beamwidth. The three sparse methods stay at 4.6–5.1° with 32–40\u202f% MD.',
     ],
     "multipath15": [
-        "COHERENT pairs (ρ = 0.9) — the decisive scenario. Coherence makes the signal covariance near-singular, which is fatal for subspace methods.",
-        "SubspaceNet-MUSIC COLLAPSES (4.8°/76 % MD) and is beaten decisively by CLASSICAL MUSIC (3.4°/18 %): the learned CNN covariance actively destroys the subspace structure MUSIC depends on — the opposite of SubspaceNet's premise.",
-        "DoAFormer dominates (2.1°/0 % MD), the only method near the 1.96° bound; DU-MFOCUSS beats MFOCUSS (5.2/30 vs 5.8/33) on identical footing.",
+        'Coherent pairs at ρ\u202f=\u202f0.9, the decisive scenario. DoAFormer leads decisively at 2.87°/1\u202f%. SubspaceNet-MUSIC follows at 2.98°/16\u202f%. Both read below the 6.53° bound, which a biased learned estimator is allowed to do.',
+        'The classical methods collapse here. Classical MUSIC 5.23°/56\u202f%, MFOCUSS 5.66°/42\u202f%, SPICE 5.82°/50\u202f%. ML beamscan is unusable at 8.27°/92\u202f%. Coherence plus low SNR is the hardest combination in the benchmark.',
+        'DU-MFOCUSS is the disappointment at 6.66°/64\u202f%. It is worse than the MFOCUSS it unfolds. Its DataSim training loss also ran high. That is an open bug hunt, not a caption.',
     ],
     "multipath25": [
-        "Coherent pairs at 25°. DoAFormer again leads by a wide margin (2.2°/0 % vs the next best 2.2°/6 %), and is the only method that transfers to DataSim almost unchanged (3.9°/3 %).",
-        "DU-MFOCUSS beats MFOCUSS on both metrics (4.2/12 vs 4.9/18) with the SAME dictionary, iteration budget, normalization and readout — so the gain is the learned λ/p and angle-dependent sparsity, not configuration.",
-        "SubspaceNet-MUSIC still degrades badly (3.1°/55 % MD) while classical MUSIC holds at 2.2°/6 %.",
+        'Coherent pairs at 25°. DoAFormer leads at 2.78°/0\u202f%, a clean sweep on detection. Then SubspaceNet-MUSIC 3.24°/14\u202f% and ML-2D 4.02°/19\u202f%. The bound is 5.59°.',
+        "ML beamscan detects nothing at all. MD is 100\u202f% in all three columns, so its RMS is undefined and shown as ‘—’. A coherent pair merges into one lobe and the single peak clears neither source's threshold.",
+        'DU-MFOCUSS again trails the method it unfolds, 6.19°/71\u202f% against MFOCUSS at 5.41°/42\u202f%. The same regression as ≥15°. Both cells are flagged, not explained.',
     ],
 }
 
@@ -3878,6 +3890,15 @@ def add_e150_table_slide(scen, title, subtitle):
     cells = data["cells"]; cols = data["columns"]; ncol = len(cols)
     sl = add_blank(title, theme="Results", subtitle=subtitle)
     def cv(m, c): return cells.get(f"{scen}|{c}|{m}")
+    # SPICE and DoAFormer end in parent_model.local_ml_refine -- a local ML beamscan on the raw
+    # snapshots that REPLACES their estimate. No other method gets it, and because it is the same
+    # computation for both, the two agreed to 1e-3 on 90% of single-source scenes, which is what
+    # made this column read identically across ten very different algorithms. The refinement is
+    # kept (it is a real part of the deployed estimator, guarded to isolated sources) but the
+    # unrefined readout is now shown beside it, so no number is misattributed. The twin is only
+    # drawn where it actually differs -- on pairs the 60-deg guard suppresses refinement and the
+    # two rows would be identical.
+    rows = [(m, False) for m in _E150_METHODS]
     def _fin(c):                                   # finite RMS values only: a method with 100% MD
         v = [cv(m, c)[0] for m in _E150_METHODS]   # has NO detected sources, so its RMS is undefined
         v = [x for x in v if x == x]               # (NaN) -- exclude it from the colour normalization
@@ -3886,7 +3907,8 @@ def add_e150_table_slide(scen, title, subtitle):
     rhi = [max(_fin(c)) for c in cols]
     mlo = [min(cv(m, c)[1] for m in _E150_METHODS) for c in cols]
     mhi = [max(cv(m, c)[1] for m in _E150_METHODS) for c in cols]
-    mw = 2.95; x0 = 0.3; fw = min(2.5, (13.05 - x0 - mw) / ncol); y = 1.42
+    mw = 2.95; x0 = 0.3; fw = min(2.5, (13.05 - x0 - mw) / ncol); y = 1.32
+    pitch = min(0.34, (5.40 - (y + 0.54 + 0.36)) / max(len(rows), 1))   # leave room for the method note
     cx = x0
     _add_card(sl, cx, y, mw - 0.07, 0.5, fill=THEMES["Results"][1])
     _add_text(sl, cx + 0.06, y, mw - 0.18, 0.5, "Method", size=10, bold=True, color=COL_TITLE_FG,
@@ -3899,43 +3921,65 @@ def add_e150_table_slide(scen, title, subtitle):
         cx += fw
     y += 0.54
     cx = x0                                                     # CRLB reference row
-    _add_card(sl, cx, y, mw - 0.07, 0.38, fill=_HEAT_CRB)
-    _add_text(sl, cx + 0.08, y, mw - 0.2, 0.38, "CRLB (bound)", size=8.8, bold=True, color=COL_TEXT,
+    _add_card(sl, cx, y, mw - 0.07, 0.34, fill=_HEAT_CRB)
+    _add_text(sl, cx + 0.08, y, mw - 0.2, 0.34, "CRLB (bound)", size=8.8, bold=True, color=COL_TEXT,
               anchor=MSO_ANCHOR.MIDDLE)
     cx += mw
     for c in cols:
         v = cells.get(f"{scen}|{c}|CRLB")
-        _add_card(sl, cx, y, fw - 0.06, 0.38, fill=_HEAT_CRB)
-        _add_text(sl, cx + 0.03, y, fw - 0.12, 0.38, (f"{v[0]:.2f}" if v else "—"), size=9.4,
+        _add_card(sl, cx, y, fw - 0.06, 0.34, fill=_HEAT_CRB)
+        _add_text(sl, cx + 0.03, y, fw - 0.12, 0.34, (f"{v[0]:.2f}" if v else "—"), size=9.4,
                   italic=True, color=COL_TEXT, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
         cx += fw
-    y += 0.4
-    for m in _E150_METHODS:
+    y += 0.36
+    for m, is_own in rows:
         cx = x0; hero = m.startswith("DU-MFOCUSS-guarded")
-        _add_card(sl, cx, y, mw - 0.07, 0.4, fill=(COL_CARD_BG2 if hero else COL_CARD_BG))
+        _add_card(sl, cx, y, mw - 0.07, pitch - 0.02, fill=(COL_CARD_BG2 if hero else COL_CARD_BG))
         mcol = (THEMES["DUNCS"][1] if m.startswith("DU") else
                 THEMES["SubspaceNet"][1] if (m.startswith("SubspaceNet") or m.startswith("DoAFormer")) else COL_WARN)
-        _add_text(sl, cx + 0.08, y, mw - 0.2, 0.4, m, size=8.6, bold=True, color=mcol, anchor=MSO_ANCHOR.MIDDLE)
+        _add_text(sl, cx + 0.08, y, mw - 0.2, pitch - 0.02, m, size=(7.8 if is_own else 8.6),
+                  bold=(not is_own), italic=is_own, color=(COL_SUB if is_own else mcol), anchor=MSO_ANCHOR.MIDDLE)
         cx += mw
         for ci, c in enumerate(cols):
             r, md = cv(m, c)[0], cv(m, c)[1]
             undetected = not (r == r)              # NaN => nothing was ever detected
-            tr = 1.0 if undetected else ((r - rlo[ci]) / (rhi[ci] - rlo[ci]) if rhi[ci] > rlo[ci] else 0.0)
-            tm = (md - mlo[ci]) / (mhi[ci] - mlo[ci]) if mhi[ci] > mlo[ci] else 0.0
-            _add_card(sl, cx, y, fw - 0.06, 0.4, fill=_heat_color(0.5 * tr + 0.5 * tm))
-            txt = f"—/{md:.0f}" if undetected else f"{r:.1f}/{md:.0f}"
-            _add_text(sl, cx + 0.03, y, fw - 0.12, 0.4, txt, size=9.6, color=COL_TEXT,
+            # Colour on a span that MEANS something, so equal numbers get equal colour. Plain
+            # min-max stretched a 0.01 deg difference across the whole red-green ramp: on the
+            # single-source column 1.56 read green and 1.57 read yellow, which is why the colours
+            # contradicted the numbers. The span now has a floor -- 5% of the column best or
+            # 0.05 deg for RMS, 5 points for MD -- so the ramp only saturates over a difference
+            # a reader would actually call a difference.
+            span_r = max(rhi[ci] - rlo[ci], 0.05, 0.05 * rlo[ci])
+            span_m = max(mhi[ci] - mlo[ci], 5.0)
+            tr = 1.0 if undetected else min(1.0, (r - rlo[ci]) / span_r)
+            tm = min(1.0, (md - mlo[ci]) / span_m)
+            _add_card(sl, cx, y, fw - 0.06, pitch - 0.02,
+                      fill=(COL_CARD_BG2 if is_own else _heat_color(0.5 * tr + 0.5 * tm)))
+            # two decimals below 10 deg: at one decimal the real spread (1.56 / 1.57 / 1.67 /
+            # 1.68 / 1.69) collapsed to "1.6" and "1.7" and the cells looked artificially equal.
+            txt = f"—/{md:.0f}" if undetected else f"{r:.2f}/{md:.0f}" if r < 10 else f"{r:.1f}/{md:.0f}"
+            _add_text(sl, cx + 0.03, y, fw - 0.12, pitch - 0.02, txt, size=(8.6 if is_own else 9.6),
+                      italic=is_own, color=(COL_SUB if is_own else COL_TEXT),
                       align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
             cx += fw
-        y += 0.42
-    _add_text(sl, 0.3, y + 0.04, 12.85, 0.26,
+        y += pitch
+    _add_text(sl, 0.3, y + 0.03, 12.85, 0.5,
+              "HOW THESE NUMBERS WERE MADE. 400 independent realizations per cell. Each draws a fresh scene, signals and noise. "
+              "One fixed seed per scenario×column, so every method sees the SAME 400 scenes. The comparison is therefore paired. "
+              "Per scene, estimates are matched one-to-one to the true angles by Hungarian assignment. A source counts as DETECTED "
+              "if its matched error clears the threshold. That threshold is half the true separation, capped at 10°. RMS° is the root-mean-square of the "
+              "errors over DETECTED sources, pooled across all 400 scenes. MD% is the share of all sources that were missed. "
+              "A method that misses its hard scenes is flattered on RMS. Always read RMS and MD together.",
+              size=7.0, italic=True, color=COL_SUB)
+    _add_text(sl, 0.3, y + 0.55, 12.85, 0.26,
               "RMS° / MD%  ·  per-column RAG heatmap (green = best on both metrics)  ·  columns = train→test domain  ·  "
-              "150 MHz recorded ULA3, N=5, T=8, SNR ~U(25,30) dB, N=400 scenes/cell, reproducible seeds  ·  "
-              "detection threshold ≤ half the source separation  ·  CRLB = deterministic conditional bound (plug-in σ̂², P̂s).",
+              "150 MHz recorded ULA3, N=5, T=8, SNR ~U(6,30) dB, N=400 scenes/cell, reproducible seeds  ·  "
+              "detection threshold ≤ half the source separation  ·  CRLB = deterministic conditional bound (plug-in σ̂², P̂s)  ·  "
+              "CRLB is the deterministic conditional bound.",
               size=7.2, italic=True, color=COL_SUB)
-    _add_card(sl, 0.3, y + 0.34, 12.75, SLIDE_H - (y + 0.34) - 0.12, fill=COL_CARD_BG2)
-    _add_text(sl, 0.48, y + 0.4, 12.4, 0.26, "Reading", size=10.5, bold=True, color=THEMES["Final"][1])
-    bullets(sl, 0.52, y + 0.68, 12.4, SLIDE_H - (y + 0.68) - 0.18, _E150_READ[scen], size=8.2)
+    _add_card(sl, 0.3, y + 0.85, 12.75, SLIDE_H - (y + 0.85) - 0.12, fill=COL_CARD_BG2)
+    _add_text(sl, 0.48, y + 0.91, 12.4, 0.26, "Reading", size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.52, y + 1.19, 12.4, SLIDE_H - (y + 1.19) - 0.18, _E150_READ[scen], size=8.2)
     return sl
 
 
@@ -4104,7 +4148,7 @@ def add_crb_synth_slide():
     return add_crb_column_slide(
         "CRB calculation — Synth→Synth column",
         "The Cramér–Rao bound for the SYNTHETIC test manifold (synthetic sources on the recorded ULA3 @150 MHz).",
-        ["SNR: drawn per scene ~U(25,30) dB (array-gain / per-source convention matching how the learned models were trained).",
+        ["SNR: drawn per scene ~U(6,30) dB (array-gain / per-source convention matching how the learned models were trained).",
          "Angles of arrival: front cone [−70°, +70°]; single = one drawn angle; pairs = two angles ≥15° (reuse / multipath) or ≥25° apart; multipath = coherent ρ→1.",
          "Frequency: 150 MHz carrier (d/λ ≈ 0.234) on the recorded ULA3 MEASURED manifold (narrowband mid-band slice) — no analytic Vandermonde is assumed.",
          "Signal covariance Ps: identity (unit powers) for non-coherent; coherence ρ→1 makes Ps singular and inflates the bound (the multipath columns)."],
@@ -4155,7 +4199,7 @@ _DOA_CORRECT_WHAT = {
     "single": [
         "SINGLE source at the green-dashed GT. Power spectra overlaid: ML (beamscan) · classical MUSIC · MFOCUSS · SPICE-IAA · SubspaceNet-MUSIC · retrained DU-MFOCUSS; DoAFormer contributes angle markers only (gridless — no spectrum).",
         "EVERY marker is that method's OWN forward() readout — not a peak picked off the plotted curve — so the DF errors in the legend are produced exactly the way the performance tables are.",
-        "Recorded ULA3 @150 MHz, SNR U(25,30) dB, 8 snapshots; scenes from deck/doa_scenes.py, the same generator the tables score. Every method resolves a single source to ~0.4–0.5° — at M = 1 they all reduce to the same matched filter, which is the sanity check this panel exists for.",
+        "Recorded ULA3 @150 MHz, SNR U(6,30) dB, 8 snapshots; scenes from deck/doa_scenes.py, the same generator the tables score. At M = 1 every method reduces to the same matched filter. That is the sanity check this panel exists for.",
         "READ THE WIDTH, NOT JUST THE PEAK: MUSIC and SubspaceNet-MUSIC are sharp (~1–2° at −3 dB) because a noise-subspace null is sharp; ML and SPICE are broad because they are beam-limited. All three families still land on the same angle.",
         "WHY MFOCUSS IS DELIBERATELY SMOOTH AT M = 1 (and spiky on pairs): forward() switches λ by source count — λ = 0.02 for pairs (sharp → resolves) and the Hof λ = 0.99 schedule for a single source (smooth → precise). Measured over 300 scenes/scenario, that split is worth 5.6×: λ = 0.99 gives RMS 0.38° — ON the 0.39° CRLB — while forcing the sparse setting gives 2.13°.",
         "The reason is in the width column: at λ = 0.02 the recovery collapses onto ONE grid node (0.2° = a single cell), so the error floors at grid quantization. The broad λ = 0.99 spectrum is what lets the soft-argmax readout interpolate BETWEEN nodes and reach sub-grid precision. A sparse method looking sparse is not automatically a sparse method being accurate.",
@@ -4372,7 +4416,7 @@ def add_datasets_sources_slide():
             "Source: measured steering a(θ) @150 MHz + drawn signals — the array response is REAL, the signals are synthetic.",
             "Scene: draw M∈{1,2} angles from the AoA pool → i.i.d. complex-Gaussian waveforms → x = A(θ)·s + noise.",
             "Pairs: REUSE = independent signals, random interferer power g∈[0.3,1]; MULTIPATH = same waveform, ρ=0.9 partially coherent (rank-2 — the realistic reflection, NOT the unsolvable ρ=1).",
-            "SNR: random per scene — U(25,30) dB.",
+            "SNR: random per scene — U(6,30) dB.",
             "Counts: 8000 train / 1500 val scenes; eval columns 3000 scenes each.",
         ]),
         ("REAL — Mitvah field recording", THEMES["SubspaceNet"][1], [
@@ -4482,7 +4526,7 @@ def add_crb_derivation_slide():
          "estimators use. This is what makes the bound comparable to the table cells."),
         ("Per-scenario statistics",
          r"\mathrm{CRB}(\theta)=\mathrm{diag}\,F^{-1},\qquad \mathrm{RMS\ bound}=\sqrt{\mathbb{E}_{\mathrm{scenes}}\!\left[\mathrm{CRB}\right]}",
-         "Each column averages the bound over ITS OWN conventions (the same draws as the eval): synthetic — angle pools, SNR~U(25,30) dB, "
+         "Each column averages the bound over ITS OWN conventions (the same draws as the eval): synthetic — angle pools, SNR~U(6,30) dB, "
          "pairs with random interferer power g∈[0.3,1] (non-coherent) or ρ=0.9 partially-coherent Pₛ (multipath); "
          "real — measured GT angles per frequency, re-noising SNR~U(30,45) dB, unit powers."),
         ("Data-from-Sim: plug-in bound",
@@ -4743,6 +4787,132 @@ def add_real_scale_bug_slide():
              COL_OK, 1.16),
         ])
 
+def add_echo_model_slide():
+    R = THEMES["Results"][1]
+    return _journey_slide(
+        "Specular echoes \u2014 the DataSim floor that wasn\u2019t physics", "Results",
+        "Why every method converged to the SAME error on the DataSim columns, and why that was the scene generator rather than the aperture. Each step: symptom \u2192 reasoning \u2192 change \u2192 measured result.",
+        [
+            ("\u2460 Symptom \u2014 a floor nobody could beat",
+             "On the DataSim columns every method landed at 3.2\u20133.7\u00b0 for a SINGLE source, against 0.40\u00b0 for the same methods on clean synthetic \u2014 a \u22489\u00d7 penalty that neither a classical spectrum search nor a trained transformer could escape. The deck read this as aperture physics: with a \u224850\u00b0 Rayleigh limit at 150\u202fMHz a specular reflection falls INSIDE the main beam, so it genuinely moves the composite wavefront and there is nothing to recover.",
+             COL_WARN, 1.06),
+            ("\u2461 The contradiction \u2014 the spread was too small to be physical",
+             "A physical limit still RANKS estimators: ML, MUSIC, MFOCUSS, SPICE, SubspaceNet-MUSIC, DoAFormer and DU-MFOCUSS differ in bias, resolution and conditioning, so they should not agree to within 0.5\u00b0 on a hard channel \u2014 yet they did, and a 1-D beamscan tied a trained transformer. Identical answers from methods with nothing in common point at the DATA, not the estimators. The second generator copy (rebuilt_multicol_eval.py) showed the same fingerprint: Sim\u2192Sim single 1.6\u20132.1\u00b0 while every other column read 0.1\u20130.3\u00b0.",
+             R, 1.14),
+            ("\u2462 Root cause \u2014 the echo reused the direct path\u2019s waveform verbatim",
+             "make_scene() built each specular echo from the SAME baseband waveform as its direct path: x = a(\u03b8)s + \u03a3\u2096 g\u2096 e^{j\u03c6\u2096} a(\u03b8\u2096) s. With one shared s, direct + echoes are exactly RANK-1, with effective steering vector a(\u03b8) + \u03a3\u2096 g\u2096 e^{j\u03c6\u2096} a(\u03b8\u2096). That composite genuinely ARRIVES off the ground truth \u2014 so the direct path is not identifiable even in principle, and every estimator is obliged to return the same displaced answer. Measured on NOISELESS single-source scenes, that displacement is 3.60\u00b0 RMS: exactly the observed floor.",
+             COL_WARN, 1.20),
+            ("\u2463 Fix \u2014 a delayed echo decorrelates, so give it its own waveform",
+             "A specular echo travels a LONGER path, so it arrives delayed; over an 8-snapshot burst that delay decorrelates it, and it acts as an INTERFERER (adds variance) rather than as part of one wavefront. s_echo = \u03c1\u00b7s + \u221a(1\u2212\u03c1\u00b2)\u00b7s\u22a5 with DATASIM_REFL_COHERENCE = 0. Measured ladder, 400 single-source DataSim scenes, beamscan: \u03c1 = 1 \u2192 3.39\u00b0 \u00b7 0.7 \u2192 2.62\u00b0 \u00b7 0.5 \u2192 2.19\u00b0 \u00b7 0.3 \u2192 1.85\u00b0 \u00b7 0 \u2192 1.57\u00b0. The duplicate generator in rebuilt_multicol_eval.py carried the identical bug and now IMPORTS the shared constant, so the two cannot drift apart again.",
+             R, 1.16),
+            ("\u2464 Result \u2014 and the caveat that comes with it",
+             "Single-source DataSim 3.2–3.7° → 1.56–1.69° at 0 % MD. The refuted claim: the DataSim floor was never the aperture — it was a rank-1 scene that hid the ground truth from every estimator at once. This fix was NECESSARY BUT NOT SUFFICIENT: a second defect then took the same column from 1.56–1.69° down to 1.20–1.27° (see ‘the cap that never capped’). Bookkeeping: the DataSim-trained checkpoints were retrained against the corrected generator here; ρ = 0 remains a MODELLING choice (a fully decorrelated echo), so a real channel sits somewhere on the ladder above.",
+             COL_OK, 1.20),
+        ])
+def add_refine_footing_slide():
+    R = THEMES["Results"][1]
+    return _journey_slide(
+        "Why every cell read the same number", "Results",
+        "The single-source column showed one value across ten very different algorithms. Three separate causes, found in order, and what finally separated them.",
+        [
+            ("① Symptom — a column that could not tell the methods apart",
+             "Every single-source cell read the same value for ML beamscan, ML-2D, ML-AP, classical MUSIC, MFOCUSS, SPICE, SubspaceNet-MUSIC, DoAFormer and DU-MFOCUSS. A benchmark whose cells agree across methods that share no mathematics is measuring something other than the methods.",
+             COL_WARN, 1.00),
+            ("② Cause 1 — some rows are the same estimator by construction",
+             "At M = 1 the deterministic-ML criterion over ONE angle reduces exactly to the beamscan, so ML-2D and ML-AP must equal ML: measured, identical on 100 % of scenes. DU-MFOCUSS gates its learned sparsity to M ≥ 2, so a single source falls back to plain MFOCUSS: identical on 100 %. Those rows were duplicates, not independent methods. ML-AP and DU-MFOCUSS-guarded have since been dropped from the tables.",
+             R, 1.16),
+            ("③ Cause 2 — a shared post-processor on two rows only",
+             "SPICE and DoAFormer both ended forward() in a LOCAL ML BEAMSCAN over the raw snapshots, which REPLACED whatever they estimated. No other method called it. Because it was the same computation in both, an IAA covariance-fitter and a transformer agreed to within 1e-3 on 91 % of single-source seeds. It remains in the deployed estimator, guarded to isolated sources, but it was never SPICE or DoAFormer being measured there.",
+             COL_WARN, 1.16),
+            ("④ Cause 3 — the SNR range could not discriminate anything",
+             "At SNR U(25,30) dB a single source is noise-limited right at the CRLB, so every consistent estimator lands on the same ML solution. Measured on 400 seeds: only 21–28 % of each method's error was its own, the rest was the shared noise realization they all saw. Two rival explanations were tested and refuted — manifold interpolation (correlation with distance to a 3° node: +0.04) and a harness fault (identical rates collapse to ~0 % on pairs).",
+             COL_WARN, 1.22),
+            ("⑤ Fix — widen the ensemble to U(6,30) dB",
+             "Cross-method spread is 0.07° at 24–30 dB and 17.4° at 6–12 dB. Low SNR is where estimators genuinely diverge, so the range now reaches 6 dB and all six checkpoints were retrained on it. The single-source column now separates: MUSIC 1.82°, DoAFormer 1.97°, ML 2.03°, SPICE 2.39°/10 % MD. SPICE is the only method that misses a lone source, and at 6–12 dB it reads 16.08° against 2.2° for the rest — the next thing to hunt.",
+             COL_OK, 1.22),
+        ])
+
+
+_DF_TRACE_DIR = Path(r"C:/GitHub/DUNCS/data/simulations/Plots")
+_DF_TRACE_READ = {
+    "single": "Look for panels whose curves sit on top of each other. That is an algorithm reproducing the all-method mean rather than estimating independently. Measured identical-estimate rates over 120 scenes: ML (beamscan), ML-2D, ML-AP and classical MUSIC agree on 100 / 100 / 99 % of scenes. At M = 1 the deterministic-ML criterion over one angle IS the beamscan. MFOCUSS = DU-MFOCUSS on 100 %, because DU’s learned sparsity is gated to M ≥ 2. Only SubspaceNet-MUSIC is independent. Since SNR was widened to U(6,30) dB the methods separate here, so these panels should no longer sit on top of each other.",
+    "reuse15": "Two independent sources, and the control for the whole diagnosis. Here the traces genuinely differ between algorithms. Identical-estimate rates collapse to about 0 % between families. MFOCUSS versus DU-MFOCUSS is 12 %. That proves the single-source degeneracy was specific to M = 1. It was not a wiring fault in the harness. On pairs the refinement never fires, so nothing is masked here.",
+    "reuse25": "Wider pairs, same control. Watch the spread between panels rather than any single curve. Where two algorithms spike on the same seeds at the same heights, they are returning the same estimate. Where one spikes alone, that estimator failed by itself on that scene.",
+    "multipath15": "Coherent pairs. Spikes shared by every panel are the geometry, usually a merged lobe the array cannot resolve. A spike in one panel alone is that estimator failing by itself. That is the case worth opening. At 6 dB many of these scenes are genuinely unresolvable.",
+    "multipath25": "Coherent pairs at 25°, read the same way as ≥15°. DU-MFOCUSS on Sim→Sim is the panel to watch. It trails the MFOCUSS it unfolds, at 6.19°/71 % against 5.41°/42 %. That is an open item, not an explained one.",
+}
+
+def add_df_trace_slide(scen, title):
+    """Per-realization DF-error traces: the diagnostic for 'why are all the numbers the same?'."""
+    sl = add_blank(title, theme="Results",
+                   subtitle="One PANEL PER ALGORITHM. Solid = that algorithm’s running MEAN |DF error| over realizations 1..n, one line per train→test domain. Dotted, same colour = the mean over the DEPLOYED methods. A solid line HIDING its dotted twin tracks the crowd exactly. That algorithm is not contributing an independent estimate. The per-scene value counts ALL sources. A miss enters at its true error, clipped at 90°. Panel titles therefore give RMS_all, the table’s THIRD statistic. Pair panels read well above the table headline. This is a 150-realization diagnostic pass. The SHAPE is the evidence, not the absolute level.")
+    fig = _DF_TRACE_DIR / f"df_traces_{scen}.png"
+    if fig.exists():
+        # _png_size_in takes a target HEIGHT (not width) and returns (w, h) at the true aspect.
+        # Passing a width here silently produced a SQUARE picture and distorted the plot.
+        w, h = _png_size_in(str(fig), 5.25)
+        if w > 12.7:                                   # clamp to the text column, keeping aspect
+            h *= 12.7 / w
+            w = 12.7
+        sl.shapes.add_picture(str(fig), Inches((SLIDE_W - w) / 2), Inches(1.12), Inches(w), Inches(h))
+        y = 1.12 + h + 0.08
+    else:
+        _add_text(sl, 0.5, 3.0, 12.3, 0.5, "[df_traces_%s.png not built — run deck/eval_150.py then deck/df_error_plots.py]" % scen,
+                  size=12, italic=True, color=COL_WARN)
+        y = 4.0
+    _add_card(sl, 0.35, y, 12.65, SLIDE_H - y - 0.12, fill=COL_CARD_BG2)
+    _add_text(sl, 0.5, y + 0.05, 12.3, 0.26, "What this shows", size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.55, y + 0.32, 12.3, SLIDE_H - (y + 0.32) - 0.16, [_DF_TRACE_READ[scen]], size=8.2)
+    return sl
+_DF_AXIS_READ = {
+    "az": "The seed-average hides WHERE the error lives. This panel puts it back. Each point averages every source whose true azimuth falls in that bin. Clean synthetic traces a clear U. Error is lowest near boresight and rises toward both cone edges. That is the manifold and the aperture, not the estimator. A method whose curve is flat where others rise is genuinely doing something different.",
+    "snr": "SNR is drawn U(6,30) dB per seed, independently of azimuth. Each point averages every seed whose drawn SNR falls in that bin. A downward slope means the cell is noise-limited. A flat line means it is limited by something else. On the DataSim columns that something else is the unresolvable echo. Extra SNR cannot remove a bias that the geometry put there.",
+}
+
+
+def add_df_axis_slide(scen, kind, title):
+    """Average DF error binned by source azimuth or by SNR, one panel per algorithm."""
+    sl = add_blank(title, theme="Results",
+                   subtitle="One PANEL PER ALGORITHM, same seeds as the performance tables. Every realization draws a fresh source azimuth and a fresh SNR. The carrier is fixed at 150 MHz and never swept. Deployed methods only; the unrefined twins are excluded so they cannot stretch the shared axis.")
+    fig = _DF_TRACE_DIR / f"df_{kind}_{scen}.png"
+    if fig.exists():
+        w, h = _png_size_in(str(fig), 5.25)
+        if w > 12.7:
+            h *= 12.7 / w
+            w = 12.7
+        sl.shapes.add_picture(str(fig), Inches((SLIDE_W - w) / 2), Inches(1.12), Inches(w), Inches(h))
+        y = 1.12 + h + 0.08
+    else:
+        _add_text(sl, 0.5, 3.0, 12.3, 0.5, "[df_%s_%s.png not built — run deck/eval_150.py then deck/df_error_plots.py]" % (kind, scen),
+                  size=12, italic=True, color=COL_WARN)
+        y = 4.0
+    _add_card(sl, 0.35, y, 12.65, SLIDE_H - y - 0.12, fill=COL_CARD_BG2)
+    _add_text(sl, 0.5, y + 0.05, 12.3, 0.26, "What this shows", size=10.5, bold=True, color=THEMES["Final"][1])
+    bullets(sl, 0.55, y + 0.32, 12.3, SLIDE_H - (y + 0.32) - 0.16, [_DF_AXIS_READ[kind]], size=8.2)
+    return sl
+
+def add_echo_strength_slide():
+    R = THEMES["Results"][1]
+    return _journey_slide(
+        "DataSim multipath strength — the cap that never capped", "Results",
+        "Single source, and still 1.6° after the rank-1 echo fix. Each step: symptom → what it is NOT → root cause → calibration → result.",
+        [
+            ("① Symptom — one source, nothing to resolve, and still 1.6°",
+             "With the rank-1 echo artifact already fixed, the DataSim columns still read 1.56–1.69° for a SINGLE source, where the same methods reached 0.40° on clean synthetic at the same SNR. One source should sit near the bound, so the residue needed an explanation rather than a caption.",
+             COL_WARN, 1.00),
+            ("② Not the estimators, and not the model order",
+             "Delete the echoes from the SAME scenes with the SAME noise: 1.61° → 0.39°, exactly the clean floor. So 100 % of the excess was the echoes. Next suspect: evaluation asks for M = 1 while the scene holds 1 direct plus 1–3 arrivals. Giving every method the TRUE arrival count did not rescue it. Beamscan went 1.61 → 1.48°, and MUSIC got WORSE: 3.53° at M=1, 6.20° at M=1+k, 10.29° at M=4. An echo inside the main lobe cannot be resolved away, and over-modelling at T = 8 costs more than the bias it removes.",
+             R, 1.24),
+            ("③ Root cause — a total-power cap set ABOVE its own maximum",
+             "The generator draws 1–3 echoes at −20..−10 dB power each, then caps the TOTAL at DATASIM_POWER_BUDGET = 0.30, which is −5.2 dB. The largest total those draws can produce is 3 × 0.09 = 0.27, below the cap, so the guard never fired once. Realized total averaged 0.087, which is −10.6 dB, with a maximum of 0.248. Setting the cap to 0.20 changed the mean not at all: the signature of an inert guard.",
+             COL_WARN, 1.22),
+            ("④ Fix — calibrate against the recordings these scenes stand in for",
+             "Not tuned to a target number. The REAL DataSim recordings are the anchor: 400 real single-source instances score 1.17–1.18° for ML, MUSIC and MFOCUSS. Synthetic single-source beamscan RMS against this budget, 800 scenes × 3 seeds: 0.30 → 1.61, 0.10 → 1.41, 0.08 → 1.32, 0.06 → 1.18, 0.05 → 1.09, 0.04 → 1.00. A budget of 0.06, which is −12.2 dB, reproduces the measured real-data error.",
+             R, 1.18),
+            ("⑤ Result — the synthetic channel was about 2× harsher than the real one",
+             "Single-source DataSim fell 1.61° → 1.18° in the sweep, and the 400-seed benchmark confirmed it at 1.20°. EVERY Sim column moved, not just single source, which is what weakening a channel does rather than patching one cell. Synth→Synth was unchanged to the last digit: the control proving nothing else moved. CAVEAT: ρ_refl = 0 is a MODELLING choice, a fully decorrelated echo, so a real channel sits somewhere on the ladder above.",
+             COL_OK, 1.22),
+        ])
 
 def add_m3_slide():
     sl = add_blank("Beyond two sources — M=3 evaluation (synthetic + real triples)", theme="Results",
@@ -5335,7 +5505,7 @@ def main():
         ("Flat loss curves — diagnosis & fix", add_flatloss_fix_slide),
         ("NN training — FINAL loss curves", add_final_loss_slide),
         ("DU-MFOCUSS — angle-dependent sparsity", add_du_lever_slide),
-        ("SubspaceNet-MUSIC — gentle loss? controlled A/B", add_music_window_slide),
+        ("SubspaceNet-MUSIC — readout window: A/B and reversal", add_music_window_slide),
         ("SubspaceNet — full code hierarchy", add_subspacenet_hierarchy_slide),
         ("Training process in detail", add_training_detail_slide),
         ("Multi-source sample generation (M>1)", add_multisource_datagen_slide),
@@ -5360,6 +5530,24 @@ def main():
         ("DU-MFOCUSS journey II — real-data adaptation", add_du_journey2_slide),
         ("DoAFormer journey — sim-to-real fine-tune", add_daf_journey_slide),
         ("Real-data eval — the sim-to-real gap that wasn't", add_real_scale_bug_slide),
+        ("Specular echoes — the DataSim floor that wasn't physics", add_echo_model_slide),
+        ("Why every cell read the same number", add_refine_footing_slide),
+        ("DataSim multipath strength — the cap that never capped", add_echo_strength_slide),
+        ("DF error per realization — single source", lambda s="single": add_df_trace_slide(s, "DF error per realization — single source")),
+        ("DF error per realization — reuse ≥15°", lambda s="reuse15": add_df_trace_slide(s, "DF error per realization — reuse ≥15°")),
+        ("DF error per realization — reuse ≥25°", lambda s="reuse25": add_df_trace_slide(s, "DF error per realization — reuse ≥25°")),
+        ("DF error per realization — multipath ≥15°", lambda s="multipath15": add_df_trace_slide(s, "DF error per realization — multipath ≥15°")),
+        ("DF error per realization — multipath ≥25°", lambda s="multipath25": add_df_trace_slide(s, "DF error per realization — multipath ≥25°")),
+        ("DF error vs source azimuth — single source", lambda s="single", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — single source")),
+        ("DF error vs source azimuth — reuse ≥15°", lambda s="reuse15", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — reuse ≥15°")),
+        ("DF error vs source azimuth — reuse ≥25°", lambda s="reuse25", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — reuse ≥25°")),
+        ("DF error vs source azimuth — multipath ≥15°", lambda s="multipath15", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — multipath ≥15°")),
+        ("DF error vs source azimuth — multipath ≥25°", lambda s="multipath25", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — multipath ≥25°")),
+        ("DF error vs SNR — single source", lambda s="single", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — single source")),
+        ("DF error vs SNR — reuse ≥15°", lambda s="reuse15", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — reuse ≥15°")),
+        ("DF error vs SNR — reuse ≥25°", lambda s="reuse25", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — reuse ≥25°")),
+        ("DF error vs SNR — multipath ≥15°", lambda s="multipath15", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — multipath ≥15°")),
+        ("DF error vs SNR — multipath ≥25°", lambda s="multipath25", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — multipath ≥25°")),
         ("Beyond two sources — M=3", add_m3_slide),
         ("Real-data GT bias — found and corrected", add_bias_correction_slide),
         ("Jitter ablation — where jitter belongs", add_jitter_ablation_slide),
@@ -5396,7 +5584,7 @@ def main():
             "Flat loss curves — diagnosis & fix",
             "NN training — FINAL loss curves",
             "DU-MFOCUSS — angle-dependent sparsity",
-            "SubspaceNet-MUSIC — gentle loss? controlled A/B",
+            "SubspaceNet-MUSIC — readout window: A/B and reversal",
             "Differentiable MUSIC — gradient flow",
             "Array calibration — recorded vs ideal ULA & the Root-MUSIC fix",
             "All models — end-to-end flow",
@@ -5469,7 +5657,7 @@ def main():
             ("Flat loss curves — diagnosis & fix", add_flatloss_fix_slide),
             ("NN training — FINAL loss curves", add_final_loss_slide),
             ("DU-MFOCUSS — angle-dependent sparsity", add_du_lever_slide),
-            ("SubspaceNet-MUSIC — gentle loss? controlled A/B", add_music_window_slide),
+            ("SubspaceNet-MUSIC — readout window: A/B and reversal", add_music_window_slide),
             ("Objectives & the Cramér–Rao bound", add_loss_slide),
             # 4 — performance comparison (the 3 cases)
             ("Correlated (multipath) sample generation", add_correlated_gen_slide),
@@ -5501,6 +5689,24 @@ def main():
         ("DU-MFOCUSS journey II — real-data adaptation", add_du_journey2_slide),
         ("DoAFormer journey — sim-to-real fine-tune", add_daf_journey_slide),
         ("Real-data eval — the sim-to-real gap that wasn't", add_real_scale_bug_slide),
+        ("Specular echoes — the DataSim floor that wasn't physics", add_echo_model_slide),
+        ("Why every cell read the same number", add_refine_footing_slide),
+        ("DataSim multipath strength — the cap that never capped", add_echo_strength_slide),
+        ("DF error per realization — single source", lambda s="single": add_df_trace_slide(s, "DF error per realization — single source")),
+        ("DF error per realization — reuse ≥15°", lambda s="reuse15": add_df_trace_slide(s, "DF error per realization — reuse ≥15°")),
+        ("DF error per realization — reuse ≥25°", lambda s="reuse25": add_df_trace_slide(s, "DF error per realization — reuse ≥25°")),
+        ("DF error per realization — multipath ≥15°", lambda s="multipath15": add_df_trace_slide(s, "DF error per realization — multipath ≥15°")),
+        ("DF error per realization — multipath ≥25°", lambda s="multipath25": add_df_trace_slide(s, "DF error per realization — multipath ≥25°")),
+        ("DF error vs source azimuth — single source", lambda s="single", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — single source")),
+        ("DF error vs source azimuth — reuse ≥15°", lambda s="reuse15", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — reuse ≥15°")),
+        ("DF error vs source azimuth — reuse ≥25°", lambda s="reuse25", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — reuse ≥25°")),
+        ("DF error vs source azimuth — multipath ≥15°", lambda s="multipath15", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — multipath ≥15°")),
+        ("DF error vs source azimuth — multipath ≥25°", lambda s="multipath25", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — multipath ≥25°")),
+        ("DF error vs SNR — single source", lambda s="single", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — single source")),
+        ("DF error vs SNR — reuse ≥15°", lambda s="reuse15", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — reuse ≥15°")),
+        ("DF error vs SNR — reuse ≥25°", lambda s="reuse25", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — reuse ≥25°")),
+        ("DF error vs SNR — multipath ≥15°", lambda s="multipath15", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — multipath ≥15°")),
+        ("DF error vs SNR — multipath ≥25°", lambda s="multipath25", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — multipath ≥25°")),
         ("Beyond two sources — M=3", add_m3_slide),
         ("Real-data GT bias — found and corrected", add_bias_correction_slide),
         ("Jitter ablation — where jitter belongs", add_jitter_ablation_slide),
@@ -5542,13 +5748,31 @@ def main():
             ("Deterministic ML — why joint beats Rayleigh", add_ml2d_why_slide),
             ("Deterministic ML — alternating projection", add_ml_ap_slide),
             ("Differentiable MUSIC — gradient flow", add_diff_music_slide),
-            ("SubspaceNet-MUSIC — gentle loss? controlled A/B", add_music_window_slide),
+            ("SubspaceNet-MUSIC — readout window: A/B and reversal", add_music_window_slide),
             ("DoAFormer — derivation: attention encoder", add_doaformer_deriv1_slide),
             ("DoAFormer — concept", add_transformer_concept_slide),
             ("DoAFormer — detailed block flow", add_doaformer_flow_slide),
             ("All models — end-to-end flow", add_all_models_flow_slide),
             ("NN training — loss curves", add_loss_curves_slide),
             ("Metrics — what the table numbers mean", add_metrics_slide),
+            ("Specular echoes — the DataSim floor that wasn't physics", add_echo_model_slide),
+            ("Why every cell read the same number", add_refine_footing_slide),
+            ("DataSim multipath strength — the cap that never capped", add_echo_strength_slide),
+            ("DF error per realization — single source", lambda s="single": add_df_trace_slide(s, "DF error per realization — single source")),
+            ("DF error per realization — reuse ≥15°", lambda s="reuse15": add_df_trace_slide(s, "DF error per realization — reuse ≥15°")),
+            ("DF error per realization — reuse ≥25°", lambda s="reuse25": add_df_trace_slide(s, "DF error per realization — reuse ≥25°")),
+            ("DF error per realization — multipath ≥15°", lambda s="multipath15": add_df_trace_slide(s, "DF error per realization — multipath ≥15°")),
+            ("DF error per realization — multipath ≥25°", lambda s="multipath25": add_df_trace_slide(s, "DF error per realization — multipath ≥25°")),
+            ("DF error vs source azimuth — single source", lambda s="single", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — single source")),
+            ("DF error vs source azimuth — reuse ≥15°", lambda s="reuse15", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — reuse ≥15°")),
+            ("DF error vs source azimuth — reuse ≥25°", lambda s="reuse25", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — reuse ≥25°")),
+            ("DF error vs source azimuth — multipath ≥15°", lambda s="multipath15", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — multipath ≥15°")),
+            ("DF error vs source azimuth — multipath ≥25°", lambda s="multipath25", k="az": add_df_axis_slide(s, k, "DF error vs source azimuth — multipath ≥25°")),
+            ("DF error vs SNR — single source", lambda s="single", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — single source")),
+            ("DF error vs SNR — reuse ≥15°", lambda s="reuse15", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — reuse ≥15°")),
+            ("DF error vs SNR — reuse ≥25°", lambda s="reuse25", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — reuse ≥25°")),
+            ("DF error vs SNR — multipath ≥15°", lambda s="multipath15", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — multipath ≥15°")),
+            ("DF error vs SNR — multipath ≥25°", lambda s="multipath25", k="snr": add_df_axis_slide(s, k, "DF error vs SNR — multipath ≥25°")),
             ("Performance — Single-source", add_e150_single),
             ("Performance — Reuse ≥15°", add_e150_reuse15),
             ("Performance — Reuse ≥25°", add_e150_reuse25),

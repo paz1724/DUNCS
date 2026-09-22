@@ -395,11 +395,17 @@ def evaluate(
     Returns:
         dict: Nested results keyed by criterion class name and method name.
     """
+    # ---- 1. ADMM sweeps take a separate path ----
+    # ADMM evaluation sweeps ITERATION COUNTS, so it produces a result per (method, iteration)
+    # rather than one per method, and cannot share the flat loop below.
     if cov_recon_method == 'admm':
         results = admm_evaluation(generic_test_dataset, criterions, system_model, model_tmp, subspace_methods,
                                   cov_recon_method, cov_recon_params, admm_iterations, models=models)
         # plot_admm_test_results(results)
 
+    # ---- 2. Standard path: every method scored under every criterion ----
+    # Results are keyed criterion -> method so that a single run can report several metrics
+    # (e.g. RMSPE and a Cartesian loss) over the SAME dataset and the same estimates.
     else:
         results = {}
         for crit in criterions:
@@ -407,10 +413,12 @@ def evaluate(
             # initialize per-criterion dict
             res = results.setdefault(crit_name, {})
 
+            # 2a. An already-instantiated model passed in directly.
             if model_tmp is not None:
                 model_test_loss = evaluate_dnn_model(model_tmp, generic_test_dataset)
                 model_name = model_tmp._get_name()
                 res[model_name] = model_test_loss
+            # 2b. Models built from config, each instantiated and scored here.
             # Evaluate DNN models
             if models is not None:
                 for model_name, params in models.items():

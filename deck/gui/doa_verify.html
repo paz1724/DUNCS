@@ -1,0 +1,716 @@
+<title>DoA Verification Bench</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg:        #EFF2F1;
+    --surface:   #FFFFFF;
+    --surface-2: #F7F9F8;
+    --line:      #D3DBD8;
+    --line-soft: #E4EAE8;
+    --ink:       #14201E;
+    --ink-2:     #40524E;
+    --muted:     #6B7C78;
+    --accent:    #0F6E5C;
+    --accent-dim:#9BC8BD;
+    --ok:        #2E6F4E;
+    --warn:      #A85A15;
+    --bad:       #9E2B2B;
+    --ok-bg:     #E3F0E8;
+    --warn-bg:   #F6EADC;
+    --bad-bg:    #F5E2E2;
+    --shadow:    0 1px 2px rgba(20,32,30,.07), 0 6px 18px rgba(20,32,30,.05);
+    --r:         6px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:        #0D1312;
+      --surface:   #151D1C;
+      --surface-2: #1B2524;
+      --line:      #2C3B38;
+      --line-soft: #223230;
+      --ink:       #E6ECEA;
+      --ink-2:     #B3C2BE;
+      --muted:     #8A9B97;
+      --accent:    #4FD0AE;
+      --accent-dim:#2A5D52;
+      --ok:        #6FD39A;
+      --warn:      #E4A055;
+      --bad:       #E97A7A;
+      --ok-bg:     #16301F;
+      --warn-bg:   #33250F;
+      --bad-bg:    #361A1A;
+      --shadow:    0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.28);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:        #0D1312;
+    --surface:   #151D1C;
+    --surface-2: #1B2524;
+    --line:      #2C3B38;
+    --line-soft: #223230;
+    --ink:       #E6ECEA;
+    --ink-2:     #B3C2BE;
+    --muted:     #8A9B97;
+    --accent:    #4FD0AE;
+    --accent-dim:#2A5D52;
+    --ok:        #6FD39A;
+    --warn:      #E4A055;
+    --bad:       #E97A7A;
+    --ok-bg:     #16301F;
+    --warn-bg:   #33250F;
+    --bad-bg:    #361A1A;
+    --shadow:    0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.28);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, Segoe UI, sans-serif;
+    font-size: 14px; line-height: 1.5;
+    padding-inline: 20px; padding-block: 20px;
+  }
+  h1, h2, h3 { font-family: Archivo, "IBM Plex Sans", system-ui, sans-serif; margin: 0; text-wrap: balance; }
+  .mono, td.num, .val { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+
+  .wrap { max-width: 1440px; margin: 0 auto; }
+
+  header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 18px; }
+  header h1 { font-size: 25px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); font-size: 13px; max-width: 70ch; margin-top: 5px; }
+  .rig { display: flex; gap: 18px; flex-wrap: wrap; }
+  .rig div { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .rig b { display: block; font-family: "IBM Plex Mono", monospace; font-size: 15px; color: var(--ink); letter-spacing: 0; text-transform: none; font-weight: 500; }
+
+  .console { display: grid; grid-template-columns: 252px minmax(0,1fr); gap: 18px; align-items: start; }
+  @media (max-width: 900px) { .console { grid-template-columns: 1fr; } }
+
+  .rail { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; box-shadow: var(--shadow); position: sticky; top: 20px; }
+  @media (max-width: 900px) { .rail { position: static; } }
+  .rail h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); font-weight: 600; margin-bottom: 8px; }
+  .field { margin-bottom: 16px; }
+  select, button { font: inherit; color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; width: 100%; }
+  select:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.run { background: var(--accent); color: var(--surface); border-color: var(--accent); font-weight: 600; cursor: pointer; padding: 9px; }
+  button.run:hover { filter: brightness(1.08); }
+  .mlist { display: flex; flex-direction: column; gap: 2px; max-height: 268px; overflow-y: auto; border: 1px solid var(--line-soft); border-radius: 4px; padding: 6px; }
+  .mrow { display: flex; align-items: center; gap: 7px; font-size: 12.5px; padding: 2px 3px; border-radius: 3px; cursor: pointer; }
+  .mrow:hover { background: var(--surface-2); }
+  .swatch { width: 11px; height: 11px; border-radius: 2px; flex: none; }
+  .mrow span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mini { display: flex; gap: 6px; margin-top: 7px; }
+  .mini button { font-size: 11.5px; padding: 5px 6px; cursor: pointer; }
+  .rangerow { display: flex; align-items: center; gap: 9px; }
+  input[type=range], input[type=checkbox] { accent-color: var(--accent); }
+  input[type=range] { width: 100%; }
+  .rangerow .val { font-size: 13px; min-width: 34px; text-align: right; }
+  .hint { margin: 5px 0 0; font-size: 11px; color: var(--muted); }
+
+  .main { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); }
+  .phead { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 12px 15px; border-bottom: 1px solid var(--line-soft); flex-wrap: wrap; }
+  .phead h2 { font-size: 15px; }
+  .phead p { margin: 0; color: var(--muted); font-size: 12px; }
+  .pbody { padding: 14px 15px; }
+
+  /* verdict strip — severity in form, not only colour */
+  .checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 0; }
+  .check { padding: 12px 15px; border-inline-end: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); display: flex; gap: 10px; }
+  .stripe { width: 3px; border-radius: 2px; flex: none; }
+  .check.ok  .stripe { background: var(--ok); }
+  .check.warn .stripe { background: var(--warn); }
+  .check.bad  .stripe { background: var(--bad); }
+  .check h3 { font-size: 12.5px; margin-bottom: 3px; display: flex; align-items: center; gap: 7px; }
+  .pill { font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 600; letter-spacing: .06em; padding: 1px 5px; border-radius: 3px; }
+  .check.ok  .pill { background: var(--ok-bg);  color: var(--ok); }
+  .check.warn .pill { background: var(--warn-bg); color: var(--warn); }
+  .check.bad  .pill { background: var(--bad-bg); color: var(--bad); }
+  .check p { margin: 0; font-size: 12px; color: var(--ink-2); }
+  .check code { font-family: "IBM Plex Mono", monospace; font-size: 11.5px; color: var(--ink); }
+
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+  .seg button { width: auto; border: 0; border-radius: 0; background: var(--surface-2); color: var(--ink-2); font-size: 12px; padding: 5px 13px; cursor: pointer; }
+  .seg button + button { border-inline-start: 1px solid var(--line); }
+  .seg button.on { background: var(--accent); color: var(--surface); font-weight: 600; }
+  .chartwrap { position: relative; }
+  canvas { display: block; width: 100%; height: auto; max-width: 100%; }
+  .readout { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 7px 9px; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; box-shadow: var(--shadow); opacity: 0; transition: opacity .12s; max-width: 260px; }
+  .readout b { display: block; margin-bottom: 4px; font-weight: 600; color: var(--muted); font-size: 10.5px; letter-spacing: .05em; }
+  .readout div { display: flex; justify-content: space-between; gap: 12px; }
+
+  .tablescroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; min-width: 620px; }
+  th, td { text-align: right; padding: 6px 9px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; }
+  td.num { font-variant-numeric: tabular-nums; }
+  tr.dim td { color: var(--muted); font-style: italic; }
+  .delta.hi { color: var(--bad); font-weight: 600; }
+  .note { color: var(--muted); font-size: 11.5px; margin-top: 10px; line-height: 1.55; }
+  .empty { padding: 40px 15px; text-align: center; color: var(--muted); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>DoA Verification Bench</h1>
+      <p class="sub">Recomputes every statistic from the raw per-source errors of each realization, so a table cell can be checked against the data it came from &mdash; and contradicted. Recorded ULA3 manifold, N&nbsp;=&nbsp;5 sensors, T&nbsp;=&nbsp;8 snapshots, SNR&nbsp;~&nbsp;U(6,30)&nbsp;dB.</p>
+    </div>
+    <div class="rig">
+      <div>Carrier<b id="rigCarrier">&mdash;</b></div>
+      <div>Realizations<b id="rigReal">&mdash;</b></div>
+      <div>Algorithms<b id="rigMeth">&mdash;</b></div>
+    </div>
+  </header>
+
+  <div class="console">
+    <aside class="rail">
+      <div class="field">
+        <h2>Scenario</h2>
+        <select id="selScen"></select>
+      </div>
+      <div class="field">
+        <h2>Train &rarr; test domain</h2>
+        <select id="selCol"></select>
+      </div>
+      <div class="field">
+        <h2>Realizations used</h2>
+        <div class="rangerow">
+          <input type="range" id="rngN" min="10" max="150" value="150" step="5">
+          <span class="val" id="rngVal">150</span>
+        </div>
+      </div>
+      <div class="field">
+        <h2>SNR band [dB]</h2>
+        <div class="rangerow">
+          <input type="range" id="snrLo" min="6" max="30" value="6" step="1">
+          <span class="val" id="snrLoVal">6</span>
+        </div>
+        <div class="rangerow">
+          <input type="range" id="snrHi" min="6" max="30" value="30" step="1">
+          <span class="val" id="snrHiVal">30</span>
+        </div>
+        <p class="hint" id="snrCount">&mdash;</p>
+      </div>
+      <div class="field">
+        <h2>Algorithms</h2>
+        <div class="mlist" id="mlist"></div>
+        <div class="mini">
+          <button id="btnAll" type="button">All</button>
+          <button id="btnNone" type="button">None</button>
+          <button id="btnDeployed" type="button">Deployed</button>
+        </div>
+      </div>
+      <button class="run" id="btnRun" type="button">Re-run verification</button>
+    </aside>
+
+    <div class="main">
+      <section class="panel">
+        <div class="phead">
+          <h2>Verification</h2>
+          <p id="checkSummary">&mdash;</p>
+        </div>
+        <div class="checks" id="checks"></div>
+      </section>
+
+      <section class="panel">
+        <div class="phead">
+          <h2 id="chartTitle">DF error per realization</h2>
+          <div class="seg" role="group" aria-label="Chart mode">
+            <button type="button" id="modeSeed" class="on">Per seed</button>
+            <button type="button" id="modeCdf">CDF</button>
+          </div>
+        </div>
+        <div class="pbody">
+          <div class="chartwrap">
+            <canvas id="chart" width="1600" height="720" role="img" aria-label="Average DF error against number of realizations averaged, one line per algorithm"></canvas>
+            <div class="readout" id="readout"></div>
+          </div>
+          <p class="note" id="chartNote"></p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="phead">
+          <h2>Recomputed vs published</h2>
+          <p>Statistics recomputed here from raw errors, beside the values in the performance tables.</p>
+        </div>
+        <div class="pbody">
+          <div class="tablescroll"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+          <p class="note" id="tblNote"></p>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+const PALETTE = ["#0F6E5C","#B4531A","#3D5A98","#8A2E5D","#4E7A29","#9E2B2B",
+                 "#2E7D8C","#7A5C15","#6D4C9F","#A8452E","#356B4A","#5C6B78"];
+const MARKER_MAX = 150;     // above this many seeds the per-seed markers merge into a
+                            // solid band, so the line is drawn without them. The seeds
+                            // are all still plotted -- nothing is truncated.
+const DEPLOYED_OUT = ["ML-AP (alt. proj.)", "DU-MFOCUSS-guarded"];   // duplicates of a row above
+let DATA = null, SEL = new Set(), COLOR = {}, HOVER = null, SERIES = [];
+let MODE = "seed";          // "seed" = one point per realization, "cdf" = empirical CDF
+
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+/* ---------- statistics, all recomputed from raw per-source errors ---------- */
+// One value per realization: the error averaged over that scene's Tx sources.
+function perReal(rows, n) {
+  const out = [];
+  for (let i = 0; i < Math.min(n, rows.length); i++) {
+    const r = rows[i];
+    let s = 0; for (let j = 0; j < r.length; j++) s += r[j];
+    out.push(s / r.length);
+  }
+  return out;
+}
+function runMean(v) {
+  const o = []; let s = 0;
+  for (let i = 0; i < v.length; i++) { s += v[i]; o.push(s / (i + 1)); }
+  return o;
+}
+function rms(v) { let s = 0; for (const x of v) s += x * x; return Math.sqrt(s / v.length); }
+function corr(a, b) {
+  const n = Math.min(a.length, b.length);
+  let ma = 0, mb = 0;
+  for (let i = 0; i < n; i++) { ma += a[i]; mb += b[i]; }
+  ma /= n; mb /= n;
+  let sa = 0, sb = 0, sab = 0;
+  for (let i = 0; i < n; i++) { const x = a[i] - ma, y = b[i] - mb; sa += x * x; sb += y * y; sab += x * y; }
+  return (sa && sb) ? sab / Math.sqrt(sa * sb) : NaN;
+}
+// Fraction of (realization, source) pairs where two methods returned the same error to 1e-6 deg.
+function identical(ra, rb, n) {
+  let same = 0, tot = 0;
+  for (let i = 0; i < Math.min(n, ra.length, rb.length); i++)
+    for (let j = 0; j < ra[i].length; j++) { tot++; if (Math.abs(ra[i][j] - rb[i][j]) < 1e-6) same++; }
+  return tot ? same / tot : 0;
+}
+
+function build() {
+  const sc = $("selScen").value, col = $("selCol").value, n = +$("rngN").value;
+  const raw = DATA.errors[sc][col];
+  // Seeds whose drawn SNR falls in the band. Everything downstream -- chart, checks, table --
+  // uses this same subset, so a verdict can never describe seeds that are off screen.
+  const lo = +$("snrLo").value, hi = +$("snrHi").value;
+  const snrs = (DATA.snr && DATA.snr[sc] && DATA.snr[sc][col]) || null;
+  let keep = null;
+  if (snrs) {
+    keep = [];
+    for (let i = 0; i < Math.min(n, snrs.length); i++) if (snrs[i] >= lo && snrs[i] <= hi) keep.push(i);
+  }
+  const cell = {};
+  for (const m in raw) cell[m] = keep ? keep.map(i => raw[m][i]) : raw[m].slice(0, n);
+  const kept = keep ? keep.length : Math.min(n, (raw[Object.keys(raw)[0]] || []).length);
+  $("snrCount").textContent = `${kept} of ${DATA.meta.realizations} seeds in band`;
+  SERIES = [...SEL].filter(m => cell[m]).map(m => {
+    const per = perReal(cell[m], cell[m].length);
+    // `per` is what the chart draws: one point per seed, NOT averaged over seeds. `run` is kept
+    // only for the convergence check, which needs a cumulative mean to ask whether the pooled
+    // cell has settled. Plotting `run` would smooth away identical seed-for-seed spikes, which
+    // is the one thing a pooled table cannot show.
+    return { m, per, run: runMean(per), rms: rms(per), color: COLOR[m] };
+  });
+  return { sc, col, n, cell };
+}
+
+/* ---------- checks ---------- */
+function runChecks(ctx) {
+  const { sc, col, n, cell } = ctx, out = [];
+  const crlb = DATA.crlb[sc][col];
+
+  // 1. duplicate estimators
+  const names = SERIES.map(s => s.m), dup = [], near = [];
+  for (let i = 0; i < names.length; i++)
+    for (let j = i + 1; j < names.length; j++) {
+      const f = identical(cell[names[i]], cell[names[j]], cell[names[i]].length);
+      if (f >= 0.90) dup.push([names[i], names[j], f]);
+      else if (f >= 0.50) near.push([names[i], names[j], f]);
+    }
+  dup.sort((a, b) => b[2] - a[2]); near.sort((a, b) => b[2] - a[2]);
+  const fmt = l => l.slice(0, 4).map(d => `<code>${d[0]} = ${d[1]} (${(d[2] * 100).toFixed(0)}%)</code>`).join(", ")
+                 + (l.length > 4 ? `, +${l.length - 4} more` : "");
+  out.push(dup.length ? {
+    lvl: "bad", name: "Duplicate estimators",
+    body: `${dup.length} pair${dup.length > 1 ? "s" : ""} return the same estimate on ≥90% of source-realizations, so their table cells <em>cannot</em> differ: ` + fmt(dup)
+  } : near.length ? {
+    lvl: "warn", name: "Duplicate estimators",
+    body: `${near.length} pair${near.length > 1 ? "s agree" : " agrees"} on 50–90% of source-realizations — partly, not wholly, the same estimator: ` + fmt(near)
+  } : { lvl: "ok", name: "Duplicate estimators", body: "No two selected algorithms agree on ≥50% of source-realizations — each cell reflects an independent estimate." });
+
+  // 2. crowd tracking
+  const deployed = SERIES.filter(s => !DEPLOYED_OUT.includes(s.m));
+  if (deployed.length > 2) {
+    const L = Math.min(...deployed.map(s => s.per.length));
+    const crowd = [];
+    for (let i = 0; i < L; i++) { let t = 0; for (const s of deployed) t += s.per[i]; crowd.push(t / deployed.length); }
+    const tracked = deployed.map(s => [s.m, corr(s.per, crowd)]).filter(x => x[1] >= 0.995);
+    out.push(tracked.length >= deployed.length - 1 ? {
+      lvl: "warn", name: "Common-mode error",
+      body: `${tracked.length} of ${deployed.length} algorithms correlate ≥0.995 with the all-method mean. The error is being driven by the <em>scene</em>, not the estimator — pooled cells will look alike however different the methods are.`
+    } : {
+      lvl: "ok", name: "Common-mode error",
+      body: `${tracked.length} of ${deployed.length} algorithms track the crowd at r ≥ 0.995; the rest carry their own error signature.`
+    });
+  }
+
+  // 3. convergence of the running mean
+  const notConv = SERIES.map(s => {
+    const r = s.run, a = r[Math.floor(r.length * 0.75)], b = r[r.length - 1];
+    return [s.m, Math.abs(b - a) / (b || 1)];
+  }).filter(x => x[1] > 0.05).sort((a, b) => b[1] - a[1]);
+  out.push(notConv.length ? {
+    lvl: "warn", name: "Convergence",
+    body: `${notConv.length} curve${notConv.length > 1 ? "s move" : " moves"} more than 5% over the last quarter of the run (worst <code>${notConv[0][0]} ${(notConv[0][1] * 100).toFixed(0)}%</code>). Differences of that size between neighbouring methods are not yet real — add realizations.`
+  } : { lvl: "ok", name: "Convergence", body: `Every running mean moves under 5% across the final quarter, so the ordering at ${n} realizations is stable.` });
+
+  // 4. below the bound
+  if (crlb) {
+    const under = SERIES.filter(s => s.rms < crlb).map(s => s.m);
+    out.push(under.length ? {
+      lvl: "warn", name: "Below the CRLB",
+      body: `<code>${under.join(", ")}</code> sit under the ${crlb.toFixed(2)}° bound. Not a violation — the CRB constrains <em>unbiased</em> estimators and a trained one is biased toward its prior — but these cannot be read as unbiased accuracy alongside the classical rows.`
+    } : { lvl: "ok", name: "Below the CRLB", body: `All selected algorithms sit above the ${crlb.toFixed(2)}° bound for this cell.` });
+  }
+
+  // 5. agreement with the published table
+  const diffs = [];
+  for (const s of SERIES) {
+    const t = DATA.table[sc][col][s.m];
+    if (!t || t.rms_all == null) continue;
+    const d = Math.abs(s.rms - t.rms_all) / (t.rms_all || 1);
+    if (d > 0.25) diffs.push([s.m, s.rms, t.rms_all, d]);
+  }
+  diffs.sort((a, b) => b[3] - a[3]);
+  out.push(diffs.length ? {
+    lvl: "warn", name: "Agreement with published table",
+    body: `${diffs.length} cell${diffs.length > 1 ? "s differ" : " differs"} from the published value by >25% (worst <code>${diffs[0][0]}: ${diffs[0][1].toFixed(2)} vs ${diffs[0][2].toFixed(2)}</code>). Expected where this run uses ${DATA.meta.realizations} realizations against the table's ${DATA.meta.table_realizations}, and where the table's headline RMS counts only detected sources while this averages all of them.`
+  } : { lvl: "ok", name: "Agreement with published table", body: "Every recomputed statistic lands within 25% of its published counterpart." });
+
+  return out;
+}
+
+function renderChecks(list) {
+  $("checks").innerHTML = list.map(c => `
+    <div class="check ${c.lvl}">
+      <div class="stripe"></div>
+      <div>
+        <h3>${c.name} <span class="pill">${c.lvl === "ok" ? "PASS" : c.lvl === "warn" ? "CHECK" : "FAIL"}</span></h3>
+        <p>${c.body}</p>
+      </div>
+    </div>`).join("");
+  const bad = list.filter(c => c.lvl === "bad").length, warn = list.filter(c => c.lvl === "warn").length;
+  $("checkSummary").textContent = bad ? `${bad} failing, ${warn} to check`
+    : warn ? `${warn} to check, none failing` : "All checks pass";
+}
+
+/* ---------- chart ---------- */
+function drawChart() {
+  const cv = $("chart"), g = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  const ink = css("--ink"), muted = css("--muted"), line = css("--line"), soft = css("--line-soft");
+  const pl = 92, pr = W - 28, pt = 26, pb = H - 62;
+
+  if (!SERIES.length) {
+    g.fillStyle = muted; g.font = `${15 * 2}px "IBM Plex Sans", sans-serif`; g.textAlign = "center";
+    g.fillText("Select at least one algorithm", W / 2, H / 2);
+    return;
+  }
+  if (MODE === "cdf") { drawCdf(g, W, H, pl, pr, pt, pb, muted, line, soft); return; }
+  const n = SERIES[0].per.length;
+  let ymax = 0;
+  for (const s of SERIES) {                       // p99 of the drawn window: one 90-deg miss
+    const w = s.per.slice(0, n).slice().sort((a, b) => a - b);   // would flatten everything else
+    ymax = Math.max(ymax, w[Math.min(w.length - 1, Math.floor(w.length * 0.99))]);
+  }
+  ymax = ymax * 1.15 || 1;
+  const X = i => pl + (pr - pl) * (i / Math.max(n - 1, 1));
+  const Y = v => pb - (pb - pt) * (v / ymax);
+
+  // grid + y ticks — every label names a value the chart reaches
+  const steps = 5;
+  g.font = `${11 * 2}px "IBM Plex Mono", monospace`; g.textBaseline = "middle";
+  for (let k = 0; k <= steps; k++) {
+    const v = ymax * k / steps, y = Y(v);
+    g.strokeStyle = k === 0 ? line : soft; g.lineWidth = k === 0 ? 2 : 1.5;
+    g.beginPath(); g.moveTo(pl, y); g.lineTo(pr, y); g.stroke();
+    g.fillStyle = muted; g.textAlign = "right";
+    g.fillText(v.toFixed(2), pl - 12, y);
+  }
+  // x ticks
+  g.textAlign = "center"; g.textBaseline = "top";
+  const xs = [1, Math.round(n * .25), Math.round(n * .5), Math.round(n * .75), n];
+  for (const t of xs) {
+    const x = X(t - 1);
+    g.strokeStyle = soft; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(x, pt); g.lineTo(x, pb); g.stroke();
+    g.fillStyle = muted; g.fillText(String(t), x, pb + 12);
+  }
+  g.fillStyle = muted; g.font = `${12 * 2}px "IBM Plex Sans", sans-serif`;
+  g.fillText("realization (seed)", (pl + pr) / 2, pb + 40);
+  g.save(); g.translate(26, (pt + pb) / 2); g.rotate(-Math.PI / 2);
+  g.textAlign = "center"; g.textBaseline = "top";
+  g.fillText("|DF error| per realization  [deg]", 0, 0); g.restore();
+
+  // series
+  for (const s of SERIES) {
+    g.strokeStyle = s.color; g.lineJoin = "round"; g.beginPath();
+    g.lineWidth = n <= MARKER_MAX ? 2.6 : (n <= 400 ? 1.6 : 1.1);
+    for (let i = 0; i < n; i++) {
+      const x = X(i), y = Y(Math.min(s.per[i], ymax));
+      i === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+    }
+    g.stroke();
+    if (n <= MARKER_MAX) {                         // one marker per seed while they stay separable
+      g.fillStyle = s.color;
+      for (let i = 0; i < n; i++) {
+        g.beginPath(); g.arc(X(i), Y(Math.min(s.per[i], ymax)), 2.6, 0, 6.2832); g.fill();
+      }
+    }
+  }
+
+  if (HOVER != null) {
+    const i = Math.max(1, Math.min(n - 1, HOVER));
+    g.strokeStyle = css("--accent"); g.lineWidth = 2; g.setLineDash([6, 6]);
+    g.beginPath(); g.moveTo(X(i), pt); g.lineTo(X(i), pb); g.stroke(); g.setLineDash([]);
+  }
+}
+
+/* Empirical CDF of the per-realization errors.
+   Uses EVERY seed, not the 80-seed preview window. A CDF is a distribution, and truncating the
+   sample would misstate its own tail. The per-seed view is windowed only because 400 markers
+   overplot into a solid block; that reason does not apply here. */
+function cdfOf(v) {
+  const x = v.slice().sort((a, b) => a - b);
+  return { x, y: x.map((_, i) => (i + 1) / x.length) };
+}
+
+function cdfXMax() {
+  let xmax = 0;
+  for (const s of SERIES) {
+    const w = s.per.slice().sort((a, b) => a - b);
+    xmax = Math.max(xmax, w[Math.min(w.length - 1, Math.floor(w.length * 0.98))]);
+  }
+  return xmax * 1.1 || 1;
+}
+
+function drawCdf(g, W, H, pl, pr, pt, pb, muted, line, soft) {
+  const xmax = cdfXMax();
+  const X = v => pl + (pr - pl) * Math.min(v / xmax, 1);
+  const Y = f => pb - (pb - pt) * f;
+
+  g.font = `${11 * 2}px "IBM Plex Mono", monospace`;
+  g.textBaseline = "middle"; g.textAlign = "right";
+  for (let k = 0; k <= 4; k++) {
+    const f = k / 4, y = Y(f);
+    g.strokeStyle = k === 0 ? line : soft; g.lineWidth = k === 0 ? 2 : 1.5;
+    g.beginPath(); g.moveTo(pl, y); g.lineTo(pr, y); g.stroke();
+    g.fillStyle = muted; g.fillText(f.toFixed(2), pl - 12, y);
+  }
+  g.textAlign = "center"; g.textBaseline = "top";
+  for (let k = 0; k <= 5; k++) {
+    const v = xmax * k / 5, x = X(v);
+    g.strokeStyle = soft; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(x, pt); g.lineTo(x, pb); g.stroke();
+    g.fillStyle = muted; g.fillText(v.toFixed(2), x, pb + 12);
+  }
+  g.fillStyle = muted; g.font = `${12 * 2}px "IBM Plex Sans", sans-serif`;
+  g.fillText("|DF error|  [deg]", (pl + pr) / 2, pb + 40);
+  g.save(); g.translate(26, (pt + pb) / 2); g.rotate(-Math.PI / 2);
+  g.textAlign = "center"; g.textBaseline = "top";
+  g.fillText("fraction of realizations at or below", 0, 0); g.restore();
+
+  for (const s of SERIES) {
+    const c = cdfOf(s.per);
+    g.strokeStyle = s.color; g.lineWidth = 3.0; g.lineJoin = "round";
+    g.beginPath(); g.moveTo(X(0), Y(0));
+    for (let i = 0; i < c.x.length; i++) {
+      const x = X(c.x[i]);
+      g.lineTo(x, Y(i / c.x.length));   // step: the honest shape for an empirical CDF
+      g.lineTo(x, Y(c.y[i]));
+      if (c.x[i] > xmax) break;
+    }
+    g.stroke();
+  }
+  g.strokeStyle = css("--accent"); g.lineWidth = 2; g.setLineDash([7, 7]);
+  g.beginPath(); g.moveTo(pl, Y(0.5)); g.lineTo(pr, Y(0.5)); g.stroke(); g.setLineDash([]);
+  g.fillStyle = css("--accent"); g.font = `${11 * 2}px "IBM Plex Mono", monospace`;
+  g.textAlign = "left"; g.textBaseline = "bottom";
+  g.fillText("median", pl + 8, Y(0.5) - 4);
+
+  if (HOVER != null && HOVER >= 0) {
+    g.strokeStyle = css("--accent"); g.lineWidth = 2; g.setLineDash([5, 5]);
+    g.beginPath(); g.moveTo(X(HOVER), pt); g.lineTo(X(HOVER), pb); g.stroke(); g.setLineDash([]);
+  }
+}
+
+function showReadout(evt) {
+  const cv = $("chart"), r = cv.getBoundingClientRect(), ro = $("readout");
+  if (!SERIES.length) return;
+  const n = SERIES[0].per.length;
+  const pl = 92 / cv.width * r.width, pr = (cv.width - 28) / cv.width * r.width;
+  const f = (evt.clientX - r.left - pl) / (pr - pl);
+  if (f < 0 || f > 1) { ro.style.opacity = 0; HOVER = null; drawChart(); return; }
+  if (MODE === "cdf") {
+    const err = f * cdfXMax();
+    HOVER = err; drawChart();
+    ro.innerHTML = `<b>at ${err.toFixed(2)}°</b>` +
+      SERIES.slice()
+        .map(s => [s, s.per.filter(v => v <= err).length / s.per.length])
+        .sort((a, b) => b[1] - a[1])
+        .map(([s, frac]) => `<div><span style="color:${s.color}">●</span>&nbsp;${s.m}<span>${(frac * 100).toFixed(0)}%</span></div>`)
+        .join("");
+    ro.style.opacity = 1;
+    const xx = evt.clientX - r.left, fl = xx > r.width * 0.55;
+    ro.style.left = fl ? "auto" : (xx + 16) + "px";
+    ro.style.right = fl ? (r.width - xx + 16) + "px" : "auto";
+    ro.style.top = "18px";
+    return;
+  }
+  const i = Math.round(f * (n - 1));
+  HOVER = i; drawChart();
+  ro.innerHTML = `<b>seed ${i + 1}</b>` +
+    SERIES.slice().sort((a, b) => a.per[i] - b.per[i])
+      .map(s => `<div><span style="color:${s.color}">●</span>&nbsp;${s.m}<span>${s.per[i].toFixed(3)}°</span></div>`).join("");
+  ro.style.opacity = 1;
+  const x = evt.clientX - r.left, flip = x > r.width * .55;
+  ro.style.left = flip ? "auto" : (x + 16) + "px";
+  ro.style.right = flip ? (r.width - x + 16) + "px" : "auto";
+  ro.style.top = "18px";
+}
+
+/* ---------- table ---------- */
+function renderTable(ctx) {
+  const { sc, col, n, cell } = ctx;
+  const head = `<tr><th>Algorithm</th><th>Recomputed mean</th><th>Recomputed RMS</th>
+    <th>Published RMS (detected)</th><th>Published RMS (all)</th><th>Published MD</th><th>&Delta; vs RMS&nbsp;all</th></tr>`;
+  const rows = SERIES.map(s => {
+    const t = DATA.table[sc][col][s.m] || {};
+    const mean = s.run[s.run.length - 1];
+    const d = (t.rms_all != null) ? (s.rms - t.rms_all) / (t.rms_all || 1) : null;
+    const dim = DEPLOYED_OUT.includes(s.m) ? " class=\"dim\"" : "";
+    return `<tr${dim}><td><span class="swatch" style="display:inline-block;background:${s.color}"></span> ${s.m}</td>
+      <td class="num">${mean.toFixed(3)}</td><td class="num">${s.rms.toFixed(3)}</td>
+      <td class="num">${t.rms != null ? t.rms.toFixed(2) : "—"}</td>
+      <td class="num">${t.rms_all != null ? t.rms_all.toFixed(2) : "—"}</td>
+      <td class="num">${t.md != null ? t.md + "%" : "—"}</td>
+      <td class="num delta${d != null && Math.abs(d) > .25 ? " hi" : ""}">${d != null ? (d * 100).toFixed(0) + "%" : "—"}</td></tr>`;
+  }).join("");
+  const tb = $("tbl");
+  tb.querySelector("thead").innerHTML = head;
+  tb.querySelector("tbody").innerHTML = rows || `<tr><td colspan="7" class="empty">No algorithms selected</td></tr>`;
+  $("tblNote").innerHTML = `Recomputed columns use ${n} realizations from this bench; published columns come from the ${DATA.meta.table_realizations}-realization performance tables. ` +
+    `<b>Recomputed RMS</b> averages over <em>all</em> Tx sources. It therefore sits above the published detected-only RMS wherever a method misses sources. Compare it against <b>RMS&nbsp;all</b>, not the headline.`;
+}
+
+/* ---------- wiring ---------- */
+function refresh() {
+  const ctx = build();
+  drawChart();
+  renderChecks(runChecks(ctx));
+  renderTable(ctx);
+  const crlb = DATA.crlb[ctx.sc][ctx.col];
+  $("chartNote").innerHTML = (MODE === "cdf"
+    ? `Empirical CDF over ALL ${DATA.meta.realizations} seeds, not a sample of them: truncating a distribution would misstate its own tail. `
+      + `Read it as, what fraction of realizations came in at or below this error. A curve further LEFT is better at every percentile, `
+      + `which is a stronger claim than a lower RMS. Curves lying on top of one another are algorithms returning the same estimates. `
+      + `The x axis stops at the 98th percentile, so gross misses sit beyond its right edge.`
+    : `Each point is ONE realization, not an average over realizations. A seed draws a fresh source azimuth, a fresh SNR in U(6,30) dB and fresh noise, at a fixed 150 MHz carrier. `
+      + `Where a scene holds two sources the point is their mean, which is the only averaging done. `
+      + `Two algorithms whose markers land on the same value seed after seed are returning the same estimate. `
+      + `Showing ALL ${(SERIES[0] || {per: []}).per.length} seeds in the band, none truncated; the y axis is clipped at the 99th percentile so one miss cannot flatten the rest.`) +
+    (crlb ? ` CRLB for this cell: <b>${crlb.toFixed(2)}°</b>.` : "");
+}
+
+function methodList() {
+  const ml = $("mlist");
+  ml.innerHTML = DATA.meta.methods.map(m => {
+    const id = "m_" + m.replace(/\W+/g, "_");
+    return `<label class="mrow" for="${id}"><input type="checkbox" id="${id}" data-m="${m}" ${SEL.has(m) ? "checked" : ""}>
+      <span class="swatch" style="background:${COLOR[m]}"></span><span>${m}</span></label>`;
+  }).join("");
+  ml.querySelectorAll("input").forEach(cb => cb.addEventListener("change", e => {
+    e.target.checked ? SEL.add(e.target.dataset.m) : SEL.delete(e.target.dataset.m);
+    refresh();
+  }));
+}
+
+async function boot() {
+  let res;
+  try {
+    res = await fetch("doa_verify_data.json");
+    if (!res.ok) throw new Error(res.status);
+    DATA = await res.json();
+  } catch (err) {
+    $("checks").innerHTML = `<div class="check bad"><div class="stripe"></div><div>
+      <h3>Data not loaded <span class="pill">FAIL</span></h3>
+      <p>Could not read <code>doa_verify_data.json</code>. Regenerate it with <code>python deck/eval_150.py 150 --tag _diag</code> then <code>python deck/export_gui_data.py</code>.</p></div></div>`;
+    return;
+  }
+  DATA.meta.methods.forEach((m, i) => COLOR[m] = PALETTE[i % PALETTE.length]);
+  SEL = new Set(DATA.meta.methods);
+  $("rigCarrier").textContent = (DATA.meta.carrier_mhz || "—") + " MHz";
+  $("rigReal").textContent = DATA.meta.realizations;
+  $("rigMeth").textContent = DATA.meta.methods.length;
+  $("selScen").innerHTML = DATA.meta.scenarios.map(s => `<option>${s}</option>`).join("");
+  $("selCol").innerHTML = DATA.meta.columns.map(c => `<option>${c}</option>`).join("");
+  $("selCol").value = "Sim-to-Sim";
+  $("rngN").max = DATA.meta.realizations; $("rngN").value = DATA.meta.realizations;
+  if (DATA.snr) {                        // bounds come from the data, not a hard-coded range
+    const all = Object.values(DATA.snr).flatMap(o => Object.values(o).flat());
+    const lo = Math.floor(Math.min(...all)), hi = Math.ceil(Math.max(...all));
+    for (const id of ["snrLo", "snrHi"]) { $(id).min = lo; $(id).max = hi; }
+    $("snrLo").value = lo; $("snrHi").value = hi;
+    $("snrLoVal").textContent = lo; $("snrHiVal").textContent = hi;
+  }
+  $("rngVal").textContent = DATA.meta.realizations;
+  methodList();
+  ["selScen", "selCol"].forEach(id => $(id).addEventListener("change", refresh));
+  $("rngN").addEventListener("input", e => { $("rngVal").textContent = e.target.value; refresh(); });
+  const syncSnr = src => {
+    let lo = +$("snrLo").value, hi = +$("snrHi").value;
+    if (lo > hi) {                       // push the other handle rather than silently swapping
+      if (src === "lo") { hi = lo; $("snrHi").value = hi; }
+      else { lo = hi; $("snrLo").value = lo; }
+    }
+    $("snrLoVal").textContent = lo;
+    $("snrHiVal").textContent = hi;
+    refresh();
+  };
+  $("snrLo").addEventListener("input", () => syncSnr("lo"));
+  $("snrHi").addEventListener("input", () => syncSnr("hi"));
+  $("btnRun").addEventListener("click", refresh);
+  const setMode = m => {
+    MODE = m;
+    HOVER = null;               // it is a seed INDEX in one mode and an ERROR value in
+    $("readout").style.opacity = 0;   // the other; carrying it across would draw a lie
+    $("modeSeed").classList.toggle("on", m === "seed");
+    $("modeCdf").classList.toggle("on", m === "cdf");
+    $("chartTitle").textContent = m === "cdf" ? "DF error \u2014 empirical CDF" : "DF error per realization";
+    refresh();
+  };
+  $("modeSeed").addEventListener("click", () => setMode("seed"));
+  $("modeCdf").addEventListener("click", () => setMode("cdf"));
+  $("btnAll").addEventListener("click", () => { SEL = new Set(DATA.meta.methods); methodList(); refresh(); });
+  $("btnNone").addEventListener("click", () => { SEL = new Set(); methodList(); refresh(); });
+  $("btnDeployed").addEventListener("click", () => {
+    SEL = new Set(DATA.meta.methods.filter(m => !DEPLOYED_OUT.includes(m))); methodList(); refresh();
+  });
+  const cv = $("chart");
+  cv.addEventListener("mousemove", showReadout);
+  cv.addEventListener("mouseleave", () => { $("readout").style.opacity = 0; HOVER = null; drawChart(); });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => drawChart());
+  refresh();
+}
+boot();
+</script>

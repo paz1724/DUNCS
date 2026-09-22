@@ -149,6 +149,12 @@ class SystemModel(object):
         Raises:
             ValueError: If the array form is not supported.
         """
+    # ---- Sensor positions, in units of the virtual-ULA grid ----
+    # ULA: N sensors at consecutive grid points, no holes.
+    # SPARSE (MRA): N sensors at NON-consecutive points chosen so their pairwise DIFFERENCES cover
+    # a much longer contiguous range. That difference co-array is the virtual ULA, which is why a
+    # sparse array of N physical elements resolves like a filled array of |U| >> N -- and why
+    # virtual_array_ula_seg, not self.array, sets the achievable resolution.
         if array_form.lower() == 'ula':
             self.array = np.linspace(0, self.params.N, self.params.N, endpoint=False)
         elif self.is_sparse_array:
@@ -168,6 +174,11 @@ class SystemModel(object):
         Returns:
             tuple: fraunhofer(float), fresnel(float)
         """
+        # ---- Field-boundary distances from the aperture ----
+        # Beyond the Fraunhofer distance the wavefront is effectively PLANAR, so a source is
+        # described by angle alone (far field). Closer than that it is measurably CURVED, and the
+        # curvature carries range information -- which is what near-field methods estimate jointly
+        # with angle. Both scale with aperture, so they are derived from the array diameter.
         wavelength = 1
         spacing = wavelength / 2
         diemeter = (self.params.N - 1) * spacing

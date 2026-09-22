@@ -207,6 +207,9 @@ class SimulationRunner:
         """
         config = self.config
 
+        # ---- 1. Optionally tee this run's output to a timestamped log ----
+        # The filename encodes the run's parameters (model, signal nature, SNR, T, eta) so a sweep
+        # leaves a self-describing set of logs rather than files distinguished only by timestamp.
         # Redirect stdout to file if enabled
         if config.commands.save_to_file:
             now = datetime.now().strftime("%d_%m_%Y_%H_%M")
@@ -220,6 +223,10 @@ class SimulationRunner:
             self.orig_stdout = sys.stdout
             sys.stdout = open(log_file, "w")
 
+        # ---- 2. Build the array model, the network and the sample generator ----
+        # SystemModel owns the geometry and the steering manifold; both the model and the data
+        # generator are built FROM it, so the estimation manifold and the generation manifold are
+        # guaranteed to be the same object -- a mismatch there would silently flatter every result.
         system_model = SystemModel(config.system_model)
         model_gen = (
             ModelGenerator()
@@ -231,6 +238,9 @@ class SimulationRunner:
         samples_model = Samples(config.system_model, config.system_model.antenna_pattern)
         train_dataset, test_dataset = self.get_dataset(create_dataset, samples_model)
 
+        # ---- 3. Train, or load a saved checkpoint ----
+        # materialize() is where clean observations and noise templates are combined at the
+        # configured SNR -- the dataset is stored unmixed so one generation serves any SNR.
         model = None
         if config.commands.train_model:
             train_dataset.materialize(config.system_model)
@@ -238,6 +248,7 @@ class SimulationRunner:
         elif config.commands.evaluate_mode:
             model = self.load_saved_model(model_gen)
 
+        # ---- 4. Evaluate ----
         result = None
         if config.commands.evaluate_mode:
             test_dataset.materialize(config.system_model)
@@ -247,6 +258,9 @@ class SimulationRunner:
             sys.stdout.close()
             sys.stdout = self.orig_stdout
             
+        # ---- 5. Reset the steering-vector singleton ----
+        # It caches the manifold for ONE system model. A sweep changes geometry or frequency between
+        # runs, so without this reset the next run would silently reuse the previous run's manifold.
         SteeringVectorGenerator.reset_instance()
 
         return result

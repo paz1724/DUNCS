@@ -35,6 +35,28 @@ class DUMFOCUSS(ParentModel):
                  ang_p_scale: float = 0.5,           # reduce-to-MFOCUSS); aimed at close-pair regions
                  ang_reg_weight: float = 1e-2,       # ||_ang_p||^2 penalty (stabilizes the profile)
                  lam_multi_scale: float = 0.02,
+                 p_min_multi: float = 0.75,   # lp-diversity FLOOR for M>=2. MFOCUSS uses 0.6; DU
+                                              # wants a little more. Swept at INIT over 120 seeds
+                                              # per cell, RMS_all/MD%, against MFOCUSS:
+                                              #        reuse15   reuse25    mp15      mp25
+                                              #  MF    24.0/49   21.1/42   20.9/40   20.6/46
+                                              #  0.60  13.3/38   13.3/34   18.9/56   17.0/54
+                                              #  0.75  15.4/36   14.0/32   15.5/35   13.6/39
+                                              #  0.90  14.2/38   16.0/34   15.0/41   14.8/45
+                                              #  1.00                      52.8/82   52.6/85
+                                              # 0.75 beats MFOCUSS on BOTH metrics in all four,
+                                              # and sits mid-plateau: 0.70-0.85 all work, while
+                                              # 1.0 collapses. Picking 0.8 would have been one
+                                              # step from that cliff.
+                                              # p -> 0 drives the reweighting toward L0, which is
+                                              # right for ONE source and wrong for a pair: at these
+                                              # sub-Rayleigh separations the dictionary is nearly
+                                              # collinear, so committing hard to one atom collapses
+                                              # the pair. MFOCUSS took this floor in fa00e88 and
+                                              # DU did not inherit it, which is why DU lost to the
+                                              # method it unfolds -- measurably so AT INIT, before
+                                              # any training: multipath-15 MD 74% for DU at init
+                                              # against 45% for MFOCUSS on the same 150 scenes.
                  peak_lim_deg: float = None,
                  normalize_dict: bool = True,   # unit-norm atoms; see mfocuss._unit_norm_cols
                  use_mcp: bool = False,         # MCP de-bias term. OFF by default: the reweight
@@ -112,6 +134,7 @@ class DUMFOCUSS(ParentModel):
         self.M = system_model.params.M
 
         # ---- Hoisted tunables / schedule constants / epsilons (defaults == historical literals) ----
+        self.p_min_multi = float(p_min_multi)  # lp floor for >=2 sources (see forward)
         self.lam_multi_scale = lam_multi_scale  # scale the learned lambda down for >=2 sources; 0.02 (sharper than
                                                 # MFOCUSS's 0.05) selected on the real train split and better on
                                                 # synthetic too (synth reuse 10->5%, multipath 16->9%, real 9->2% MD)
@@ -184,11 +207,13 @@ class DUMFOCUSS(ParentModel):
                                                        normalize_dict))
         self._A_use = None          # active dictionary/grid (set per-forward by source count)
         self._grid_use = None
+        self._p_floor_use = 0.0                # set per call in forward()
 
         # Learned per-layer parameters (reparameterized to valid ranges):
         #   lambda_k = softplus(raw_lambda_k) + eps  > 0   (regularization)
         #   p_k      = 2 * sigmoid(raw_p_k) in (0, 2)       (lp diversity)
-        # Initialized to reproduce classical MFOCUSS (Hof annealing): lambda_k = 0.99
+        # Initialized to reproduce classical MFOCUSS (Hof annealing), INCLUDING its
+        # source-adaptive lp floor (p_min_multi): lambda_k = 0.99
         # (constant) and p_k annealed 0.99 -> ~0.1 across the K layers. With the RMS
         # normalization + least-squares init in get_learned_covariance, untrained
         # DU-MFOCUSS *is* MFOCUSS (a strict special case: DU with a fixed schedule),
@@ -325,10 +350,11 @@ class DUMFOCUSS(ParentModel):
                 feat = torch.stack([f1, f2], dim=1).to(torch.float32)                    # [B, 2]
                 delta = self._hyper[kk](feat).to(torch.float64)                           # [B, 3]
                 p_k = (2.0 * torch.sigmoid(self._raw_p[kk] + delta[:, 1])).unsqueeze(1)   # [B, 1]
+                p_k = p_k.clamp_min(self._p_floor_use)        # source-adaptive lp floor
                 lam_k = (F.softplus(self._raw_lambda[kk] + delta[:, 0]) + self.lam_eps) * self._lam_scale   # [B]
                 m_k = F.softplus(self._raw_mcp[kk] + delta[:, 2]).unsqueeze(1)             # [B, 1] MCP de-bias
             else:
-                p_k = 2.0 * torch.sigmoid(self._raw_p[kk])
+                p_k = (2.0 * torch.sigmoid(self._raw_p[kk])).clamp_min(self._p_floor_use)
                 lam_k = (F.softplus(self._raw_lambda[kk]) + self.lam_eps) * self._lam_scale
                 m_k = F.softplus(self._raw_mcp[kk])
 
@@ -336,9 +362,13 @@ class DUMFOCUSS(ParentModel):
             # annealing p down the classical Hof path, so DU gets the same iteration budget as the
             # deployed MFOCUSS and cannot win merely by running longer.
             if k >= self.num_iter:
-                # extension tail: continue the Hof p-anneal from the last layer's p toward 0.01
+                # Extension tail: continue the Hof p-anneal from the last layer's p. The TARGET is
+                # source-adaptive, like the floor above -- the tail is 80 of the 100 iterations, so
+                # annealing it to 0.01 for a pair silently undid the floor the learned layers had
+                # just applied, and the pair collapsed anyway.
+                target = max(self.extend_p_target, self._p_floor_use)
                 decay = float(np.exp(-self.extend_p_decay * (k - self.num_iter + 1)))
-                p_k = self.extend_p_target + (p_k - self.extend_p_target) * decay
+                p_k = target + (p_k - target) * decay
 
             # FOCUSS reweight + learned MCP de-bias: the (1 + m_k*rn) factor boosts the reweight for
             # already-strong atoms (relative magnitude rn in [0,1] from the PREVIOUS iterate),
@@ -476,6 +506,8 @@ class DUMFOCUSS(ParentModel):
         # Source-adaptive regularization: lower lambda for >=2 sources sharpens the spectrum so close
         # sources resolve (the learned single-source lambda over-smooths and merges them).
         self._lam_scale = 1.0 if src <= 1 else self.lam_multi_scale
+        # Same split for the lp floor: L0-ward for one source, held off zero for a pair.
+        self._p_floor_use = 0.0 if src <= 1 else self.p_min_multi
         # Source-adaptive grid: FINE dictionary for a single source (sub-grid precision), COARSE for
         # >=2 sources (broader peaks detect both close sources; the fine grid over-sparsifies -> misses one).
         single = src <= 1
@@ -497,6 +529,13 @@ class DUMFOCUSS(ParentModel):
             self._grid_use = self.grid_fine
             spec_f = torch.cat([self.get_learned_covariance(x[i:i + self.eval_chunk])   # chunked: fine-grid pass
                                 for i in range(0, x.shape[0], self.eval_chunk)])        # OOMs on 4 GB at B=3000
+            # get_learned_covariance() caches _last_spectrum per CALL, so after a chunked loop it
+            # holds only the FINAL chunk. training_step's dense spectrum auxiliary loss reads that
+            # cache, so whenever the batch exceeded eval_chunk the aux loss was computed on a
+            # fraction of the batch and silently mismatched the targets. Restore the full-batch
+            # spectrum here. (Latent while eval_chunk=256 > batch=128 made the loop a single pass;
+            # it surfaced as a 32-vs-128 shape error the moment eval_chunk was lowered.)
+            self._last_spectrum = spec_f
             doa_prediction = self._refine_local(spec_f, doa_prediction)
         return doa_prediction, source_estimation, None
 

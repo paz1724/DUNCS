@@ -170,10 +170,20 @@ def crb_scene(x, angles_deg, M):
     charged to the noise term (a deliberately conservative bound on the DataSim columns) and the
     true partial coherence rho enters through Ps (rho->1 makes Ps singular and inflates the bound).
     """
+    # ---- 1. Steering matrix and its ANGLE DERIVATIVE ----
+    # D = da/dtheta is what the bound is really made of: it measures how fast the array response
+    # moves as a source moves. Computed by central difference on the RECORDED manifold, because no
+    # analytic derivative exists for a measured pattern.
     ang = np.atleast_1d(angles_deg).astype(float)
     Am = np.stack([steer(a) for a in ang], axis=1)                      # [N, M]
     d = 0.05
     D = np.stack([(steer(a + d) - steer(a - d)) / (2 * np.deg2rad(d)) for a in ang], axis=1)
+
+    # ---- 2. Plug-in estimates from THIS realization ----
+    # sigma^2 and Ps are estimated from the actual snapshots rather than assumed. Two consequences
+    # that matter for reading the tables: unmodeled multipath lands in the residual and is charged
+    # to sigma^2 (so the DataSim bound is deliberately conservative), and the TRUE coherence enters
+    # through Ps -- as rho -> 1, Ps becomes singular and the bound correctly blows up.
     N_, Tn = x.shape
     Pinv = np.linalg.pinv(Am)
     S = Pinv @ x                                                        # LS source waveforms
@@ -182,6 +192,11 @@ def crb_scene(x, angles_deg, M):
     denom = max(Tn * (N_ - M), 1)
     sigma2 = float(np.sum(np.abs(resid) ** 2) / denom)
     Ps = (S @ S.conj().T) / Tn                                          # includes the true coherence
+
+    # ---- 3. Fisher information, then invert ----
+    # P_perp projects OUT the signal subspace, so only the component of the derivative that cannot
+    # be confused with another source contributes information -- which is exactly why two close
+    # sources bound each other so much worse than one source alone.
     Fim = (2.0 * Tn / max(sigma2, 1e-12)) * np.real((D.conj().T @ Pperp @ D) * Ps.T)
     try:
         crb = np.diag(np.linalg.inv(Fim))
@@ -191,6 +206,10 @@ def crb_scene(x, angles_deg, M):
 
 
 def build(mt, pr, wf=None):
+    # ---- Build a model and load weights STRICTLY ----
+    # Both guards below exist because a silently-partially-initialized network still produces
+    # plausible-looking numbers, which is far worse than a crash: it publishes a random model as a
+    # measured result. Missing file and missing keys both abort.
     m = (ModelGenerator().set_model_type(mt).set_system_model(SM).set_model_params(pr).set_model()).model.to(device).eval()
     if wf:
         p = "data/weights/" + wf
@@ -206,6 +225,18 @@ mfo = build("MFOCUSS", dict(num_iterations=100, grid_size=901, grid_range_deg=FR
 # SPICE/IAA needs the FULL-azimuth grid (see spice.py): its R = A diag(p) A^H must represent the
 # isotropic noise, which front-cone-only atoms cannot do (RMS 1.92 -> 0.62 deg).
 spi = build("SPICE", dict(num_iterations=100, grid_size=901, grid_range_deg=FRONT))
+# ---- Unrefined twins: what SPICE and DoAFormer estimate ON THEIR OWN ----
+# Both end their forward() in parent_model.local_ml_refine, which re-solves a LOCAL ML beamscan
+# on the raw snapshots and REPLACES the estimate. No other method here gets that post-processor,
+# so the two rows were being scored on an unequal footing -- and since the refinement is the same
+# computation for both, an IAA covariance-fitter and a transformer agreed to 1e-3 on 90% of
+# single-source scenes, which is what made the whole column look identical. The refinement is a
+# legitimate part of the deployed estimator (it is guarded to isolated sources only, min_sep 60
+# deg > the array Rayleigh limit, so pairs are untouched), so it is KEPT -- but each method now
+# also reports its own readout, and the table labels which number is which.
+# Measured, 200 single-source scenes: SPICE own 2.17 -> 0.39 refined (clean), 2.42 -> 1.17
+# (DataSim); DoAFormer own 1.19 -> 0.39 and 2.02 -> 1.17.
+spi_own = build("SPICE", dict(num_iterations=100, grid_size=901, grid_range_deg=FRONT, refine_deg=0))
 DUP = dict(num_iterations=20, grid_size=901, grid_range_deg=FRONT, p_init_decay=0.2,
            peak_lim_deg=70.0, angle_dependent_reg=True)
 MUP = dict(tau=7, diff_method="music_1D")
@@ -215,7 +246,8 @@ for dom in ("synth", "datasim"):
     du = build("DUMFOCUSS", DUP, f"du_150MHz_{dom}.pt"); du.extend_iters = 80
     LEARNED[dom] = dict(du=du,
                         mus=build("SubspaceNet", MUP, f"music_150MHz_{dom}.pt"),
-                        dfm=build("DoAFormer", DFP, f"doaformer_150MHz_{dom}.pt"))
+                        dfm=build("DoAFormer", DFP, f"doaformer_150MHz_{dom}.pt"),
+                        dfm_own=build("DoAFormer", dict(**DFP, refine_deg=0), f"doaformer_150MHz_{dom}.pt"))
 print(f"carrier={CARRIER} MHz | all checkpoints loaded strictly | N={N}", flush=True)
 
 def md_(m, x, M):
@@ -226,7 +258,8 @@ def resid(x, ang):
     return float(np.linalg.norm(x - At @ S) / (np.linalg.norm(x) + 1e-12))
 
 METHODS = ["ML (beamscan)", "ML-2D (joint)", "ML-AP (alt. proj.)", "MUSIC (classical)", "MFOCUSS", "SPICE (IAA)", "SubspaceNet-MUSIC", "DoAFormer",
-           "DU-MFOCUSS", "DU-MFOCUSS-guarded"]
+           "DU-MFOCUSS", "DU-MFOCUSS-guarded",
+           "SPICE (own readout)", "DoAFormer (own readout)"]
 def estimate(x, M, dom):
     L = LEARNED[dom]
     o = {"ML (beamscan)": ml_doa(x, M), "ML-2D (joint)": ml2d_doa(x, M),
@@ -234,7 +267,9 @@ def estimate(x, M, dom):
          "MUSIC (classical)": classic_music(x, M),
          "MFOCUSS": md_(mfo, x, M), "SPICE (IAA)": md_(spi, x, M),
          "SubspaceNet-MUSIC": md_(L["mus"], x, M), "DoAFormer": md_(L["dfm"], x, M),
-         "DU-MFOCUSS": md_(L["du"], x, M)}
+         "DU-MFOCUSS": md_(L["du"], x, M),
+         "SPICE (own readout)": md_(spi_own, x, M),                 # no local-ML refinement
+         "DoAFormer (own readout)": md_(L["dfm_own"], x, M)}
     o["DU-MFOCUSS-guarded"] = o["DU-MFOCUSS"] if resid(x, o["DU-MFOCUSS"]) <= resid(x, o["MFOCUSS"]) else o["MFOCUSS"]
     return o
 
@@ -247,6 +282,14 @@ SCEN = {"single":      (1, None, 0.0, False),
 COLUMNS = [("Synth\u2192Synth", "synth", False), ("Synth\u2192Sim", "synth", True), ("Sim\u2192Sim", "datasim", True)]
 SEEDS = {"single": 1001, "reuse15": 1002, "reuse25": 1003, "multipath15": 1004, "multipath25": 1005}
 
+# ---- Per-realization traces ----
+# The table reports ONE pooled number per cell, which cannot show whether methods differ
+# scene-by-scene or merely land on the same pooled value. Every per-scene error is therefore
+# kept so the running average can be plotted against realization index (deck/df_error_plots.py):
+# lines that lie ON TOP of each other are methods returning the SAME answer, not methods that
+# happen to average alike. Costs nothing -- the errors are already computed for scoring.
+TAG = sys.argv[sys.argv.index("--tag") + 1] if "--tag" in sys.argv else ""
+traces = {}
 out = {"meta": {"carrier_mhz": CARRIER, "N": N, "rho_partial": RHO_PARTIAL,
                 "note": "150 MHz; MFOCUSS on equal +/-70 footing; rho=0.9 partial coherence; "
                         "threshold <= half separation; RMS_all counts missed sources; reproducible seeds. "
@@ -260,7 +303,12 @@ for scen, (M, gap, rho, imb) in SCEN.items():
         for _ in range(N):
             gt = draw_angles(rng, M, gap_deg=gap)
             pw = [float(rng.uniform(*POWER_IMBALANCE)), 1.0] if imb else None
-            x, _ = make_scene(steer, gt, rng, T=T, rho=rho, powers=pw, datasim=datasim)
+            x, snr_db = make_scene(steer, gt, rng, T=T, rho=rho, powers=pw, datasim=datasim)
+            # Record what the SEED actually drew. The error traces alone cannot say WHERE in
+            # the ensemble an error lives: a seed-average hides whether it concentrates at the
+            # cone edge or at low SNR. Carrier is fixed at 150 MHz and never swept.
+            traces.setdefault(f"{scen}|{cname}|__az", []).append(np.asarray(gt, float))
+            traces.setdefault(f"{scen}|{cname}|__snr", []).append(float(snr_db))
             c_ = crb_scene(x, gt, M)
             if np.all(np.isfinite(c_)):
                 crbs.append(float(np.sqrt(np.mean(c_ ** 2))))
@@ -268,6 +316,12 @@ for scen, (M, gap, rho, imb) in SCEN.items():
             for k in METHODS:
                 e, miss, ng, eall = score_scene(est[k], gt)
                 a, b, c, d = acc[k]; acc[k] = (a + e, b + eall, c + miss, d + ng)
+                # PER-SOURCE errors for this scene, shape [M]. Stored per source rather than
+                # pre-aggregated so a consumer can average over the Tx sources itself (mean) or
+                # form an RMS -- the two differ on multi-source scenes, and collapsing here would
+                # have forced one choice on every downstream plot.
+                traces.setdefault(f"{scen}|{cname}|{k}", []).append(
+                    np.clip(np.asarray(eall, float), 0, 90))
         # Report the RMS of the per-scene bound: every estimator cell is an RMS over the same
         # scenes, so comparing them against the MEDIAN bound was apples-to-oranges and made the
         # efficient methods look 11% above the CRLB when they are within 3%.
@@ -281,5 +335,10 @@ for scen, (M, gap, rho, imb) in SCEN.items():
         row = "  ".join(f"{k.split(' ')[0][:9]}={out['cells'][f'{scen}|{cname}|{k}'][0]:.1f}/{out['cells'][f'{scen}|{cname}|{k}'][1]}" for k in METHODS)
         print(f"{scen:12s} {cname:14s} {row}", flush=True)
 
-json.dump(out, open("data/simulations/results/eval_150.json", "w", encoding="utf-8"), indent=1, ensure_ascii=False)
-print("\nSAVED data/simulations/results/eval_150.json\nDONE", flush=True)
+jpath = f"data/simulations/results/eval_150{TAG}.json"
+tpath = f"data/simulations/results/eval_150{TAG}_traces.npz"
+json.dump(out, open(jpath, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+# npz member names become zip entries, so strip "|" and the arrow out of the cell keys
+np.savez_compressed(tpath, **{k.replace("|", "__").replace("→", "-to-"): np.asarray(v)
+                              for k, v in traces.items()})
+print(f"\nSAVED {jpath}\nSAVED {tpath}\nDONE", flush=True)
