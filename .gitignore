@@ -41,3 +41,14 @@ data/simulations/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Archives -- never commit these. A 57.9 MB DUNCS.7z was committed in 5824204 and deleted
+# again later, but git keeps every version ever committed, so .git still carries it and is
+# 275 MB as a result. Removing the file a second time reclaims nothing; only rewriting those
+# commits would, and that was declined. These rules stop it happening again.
+*.7z
+*.zip
+*.rar
+*.tar
+*.tar.gz
+*.tgz
